@@ -1,0 +1,25 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+*.sqlite3
+.venv/
+env/
+venv/
+uploads/
+*.pdf
+.idea/
+.vscode/
+
+# Node & Next.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+*.log
+.DS_Store

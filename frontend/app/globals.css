@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 26% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 26% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 26% 14%;
+    --primary: 221 72% 44%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 214 30% 96%;
+    --secondary-foreground: 222 26% 14%;
+    --muted: 214 28% 96%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 220 65% 46%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 215 24% 90%;
+    --input: 215 24% 88%;
+    --ring: 221 72% 44%;
+    --radius: 0.875rem;
+  }
+
+  .dark {
+    --background: 222 26% 8%;
+    --foreground: 210 30% 96%;
+    --card: 222 24% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 24% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217 89% 67%;
+    --primary-foreground: 222 26% 10%;
+    --secondary: 218 22% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 218 22% 15%;
+    --muted-foreground: 215 18% 65%;
+    --accent: 217 89% 67%;
+    --accent-foreground: 222 26% 10%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 218 20% 20%;
+    --input: 218 20% 22%;
+    --ring: 217 89% 67%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground transition-colors duration-200 antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer utilities {
+  .page-surface {
+    background-image: radial-gradient(circle at 50% -20%, hsl(var(--primary) / 0.07), transparent 34rem);
+  }
+
+  .dark .page-surface {
+    background-image: radial-gradient(circle at 50% -20%, hsl(var(--primary) / 0.12), transparent 34rem);
+  }
+}
