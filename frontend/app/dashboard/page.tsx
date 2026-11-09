@@ -8,15 +8,20 @@ import {
   Bot,
   Check,
   Copy,
+  ExternalLink,
   FileCheck2,
   FileText,
+  Headphones,
   Home,
   Layers,
   LogOut,
   Search,
   Send,
+  Sparkles,
   Trash2,
   User as UserIcon,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { DynamicAnalyticsChart } from "@/components/dynamic-analytics-chart";
@@ -70,12 +75,12 @@ interface ChatSuggestion {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const CHAT_SUGGESTIONS: ChatSuggestion[] = [
-  { label: "👋 Say hello", query: "Hello" },
-  { label: "📄 Give me a short overview", query: "Give me a short overview of this document." },
-  { label: "🔎 What are the main topics?", query: "What are the main topics and key points?" },
-  { label: "📌 Find important details", query: "List the most important names, dates, scores, or numbers." },
-  { label: "💡 What should I know?", query: "What are the most useful things to know from this document?" },
-  { label: "🗂️ Compare my files", query: "What themes are shared across my documents?" },
+  { label: "⚡ Skill-Gap & ATS Audit", query: "Run a Skill-Gap & ATS Audit comparing the resume against the curriculum/data mining syllabus. Highlight matched skills, missing technical topics, and ATS bullet rewrites." },
+  { label: "📝 Exam Prep / Viva Mode", query: "Generate 5 technical interview / exam prep questions strictly grounded in this document with answers and page citations." },
+  { label: "👤 Resume Executive Profile", query: "What is this resume all about?" },
+  { label: "🔬 WEKA & Data Mining Notes", query: "What is WEKA tool used for and what are the main experiments in DM File.pdf?" },
+  { label: "💡 What should I know?", query: "What are the most useful things to know from my documents?" },
+  { label: "🗂️ Compare my files", query: "What themes and skills are shared across my documents?" },
 ];
 
 function getDocumentType(filename: string) {
@@ -96,7 +101,37 @@ export default function DashboardPage() {
   const [currentUser, setCurrentUser] = useState("tushar");
   const [expandedSourceChunk, setExpandedSourceChunk] = useState<SourceItem | null>(null);
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [latencyMs, setLatencyMs] = useState(420);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const handleToggleAudioBrief = () => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Speech synthesis is not supported in this browser.");
+      return;
+    }
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    const lastAssistantMsg = [...messages].reverse().find((m) => m.sender === "assistant")?.text;
+    const textToSpeak =
+      lastAssistantMsg ||
+      activeSummary?.executive_summary ||
+      "Welcome to TokenBrief AI. Upload or select a document to listen to an executive summary or ask questions.";
+    const cleanSpeechText = textToSpeak
+      .replace(/[#*`_~]/g, "")
+      .replace(/\(Source:[^)]+\)/gi, "")
+      .replace(/\[Excerpt[^\]]+\]/gi, "");
+    const utterance = new SpeechSynthesisUtterance(cleanSpeechText);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    setIsSpeaking(true);
+    window.speechSynthesis.speak(utterance);
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -144,6 +179,7 @@ export default function DashboardPage() {
     setMessages((previous) => [...previous, userMsg]);
     setInputQuery("");
     setIsLoading(true);
+    const requestStartTime = Date.now();
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/qa/quick-chat`, {
@@ -156,6 +192,8 @@ export default function DashboardPage() {
           session_id: chatSessionId || undefined,
         }),
       });
+
+      setLatencyMs(Date.now() - requestStartTime);
 
       if (!response.ok) {
         throw new Error("We could not find an answer right now.");
@@ -266,6 +304,16 @@ export default function DashboardPage() {
               </div>
               <span className="max-w-28 truncate text-xs font-medium text-muted-foreground">{currentUser}</span>
             </div>
+            <Button
+              variant={isSpeaking ? "default" : "outline"}
+              size="sm"
+              onClick={handleToggleAudioBrief}
+              className={`gap-1.5 text-xs h-8 px-2.5 ${isSpeaking ? "bg-amber-600 hover:bg-amber-700 text-white animate-pulse" : ""}`}
+              title={isSpeaking ? "Stop audio briefing" : "Listen to audio brief"}
+            >
+              {isSpeaking ? <VolumeX className="h-3.5 w-3.5" /> : <Headphones className="h-3.5 w-3.5 text-primary" />}
+              <span className="hidden sm:inline">{isSpeaking ? "Stop Brief" : "Audio Brief"}</span>
+            </Button>
             <Link href="/">
               <Button variant="ghost" size="sm" className="text-xs h-8 px-2.5 gap-1.5 hidden sm:inline-flex">
                 <Home className="h-3.5 w-3.5" />
@@ -305,7 +353,7 @@ export default function DashboardPage() {
         <MetricsCards
           data={{
             totalDocuments: documents.length,
-            averageLatencyMs: 6,
+            averageLatencyMs: latencyMs,
             securityStatus: "Active",
           }}
         />
@@ -643,39 +691,74 @@ export default function DashboardPage() {
       </main>
 
       {expandedSourceChunk && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="source-excerpt-title"
-            className="w-full max-w-lg rounded-2xl border border-border bg-card p-5 shadow-2xl"
+            className="w-full max-w-xl rounded-2xl border border-primary/20 bg-card p-6 shadow-2xl"
           >
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start justify-between gap-4 border-b border-border/80 pb-4">
               <div className="min-w-0">
-                <h2 id="source-excerpt-title" className="flex items-center gap-2 text-sm font-semibold">
-                  <FileText className="h-4 w-4 text-primary" />
-                  Source excerpt
-                </h2>
-                <p className="mt-1 truncate text-xs text-muted-foreground">{expandedSourceChunk.document_filename}</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <FileText className="h-3.5 w-3.5" />
+                  </span>
+                  <h2 id="source-excerpt-title" className="text-base font-semibold tracking-tight">
+                    Citation Inspector
+                  </h2>
+                </div>
+                <p className="mt-1 truncate text-xs font-medium text-primary">
+                  {expandedSourceChunk.document_filename}
+                </p>
               </div>
               <button
                 type="button"
                 onClick={() => setExpandedSourceChunk(null)}
-                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                 aria-label="Close source excerpt"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
-              <span>Page {expandedSourceChunk.source_page_number || 1}</span>
-              <span>Match {expandedSourceChunk.similarity_percentage}%</span>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="secondary" className="font-mono text-[11px] bg-primary/10 text-primary border-primary/20">
+                Page {expandedSourceChunk.source_page_number || 1}
+              </Badge>
+              <Badge variant="outline" className="text-[11px]">
+                Grounding Match {expandedSourceChunk.similarity_percentage}%
+              </Badge>
+              <span className="text-[11px] text-muted-foreground">
+                Verified against workspace index
+              </span>
             </div>
-            <div className="mt-4 max-h-64 overflow-y-auto rounded-xl border border-border bg-muted/40 p-4 text-sm leading-6 whitespace-pre-wrap">
-              {expandedSourceChunk.chunk_text_content}
+
+            <div className="mt-4 rounded-xl border border-border bg-muted/40 p-4 text-xs sm:text-sm leading-relaxed max-h-72 overflow-y-auto">
+              <div className="whitespace-pre-wrap font-sans text-foreground/90 selection:bg-amber-300 selection:text-amber-950">
+                {expandedSourceChunk.chunk_text_content.replace(/\[Document:[^\]]+\]\n?/g, "")}
+              </div>
             </div>
-            <div className="mt-5 flex justify-end">
-              <Button size="sm" onClick={() => setExpandedSourceChunk(null)}>Close</Button>
+
+            <div className="mt-5 flex items-center justify-between gap-3 border-t border-border/70 pt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const targetDoc = documents.find((d) => d.filename === expandedSourceChunk.document_filename);
+                  if (targetDoc) {
+                    handleSummarizeDoc(targetDoc.id);
+                  }
+                  setExpandedSourceChunk(null);
+                }}
+                className="gap-1.5 text-xs"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <span>Summarize Full File</span>
+              </Button>
+              <Button size="sm" onClick={() => setExpandedSourceChunk(null)} className="text-xs px-4">
+                Done
+              </Button>
             </div>
           </div>
         </div>

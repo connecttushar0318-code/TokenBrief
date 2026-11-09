@@ -89,7 +89,10 @@ async def upload_document_file(
                 detail="No readable text could be extracted from the uploaded document"
             )
 
-        generated_chunks = DocumentTextChunker.split_pages_into_chunks(extracted_pages)
+        generated_chunks = DocumentTextChunker.split_pages_into_chunks(
+            extracted_pages,
+            document_filename=original_filename
+        )
         if not generated_chunks:
             destination_file_path.unlink(missing_ok=True)
             raise HTTPException(

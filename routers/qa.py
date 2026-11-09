@@ -6,6 +6,7 @@ from typing import Optional, List
 from database import get_database_session
 from models import (
     UserAccount,
+    DocumentRecord,
     SemanticQueryCacheRecord,
     ConversationThreadRecord,
     ConversationMessageRecord
@@ -87,10 +88,28 @@ async def ask_document_question(
             )
 
         user_name_identifier = optional_user_account.username if optional_user_account else None
+
+        inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
+        if user_identifier_id:
+            inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_identifier_id)
+        inventory_result = await database_session.execute(inventory_stmt)
+        user_doc_inventory = [
+            {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
+            for row in inventory_result.all()
+        ]
+
+        active_scope_name = "All documents"
+        if target_doc_id:
+            matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
+            if matching_scope:
+                active_scope_name = matching_scope["filename"]
+
         model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
             user_question_text=question_payload.question_text,
             retrieved_context_chunks=matched_chunks,
-            user_name=user_name_identifier
+            user_name=user_name_identifier,
+            doc_inventory=user_doc_inventory,
+            active_filter=active_scope_name
         )
 
         source_references = [
@@ -175,12 +194,30 @@ async def convenient_quick_chat(
         )
 
     user_name_identifier = optional_user_account.username if optional_user_account else None
+
+    inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
+    if user_id:
+        inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_id)
+    inventory_result = await database_session.execute(inventory_stmt)
+    user_doc_inventory = [
+        {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
+        for row in inventory_result.all()
+    ]
+
+    active_scope_name = "All documents"
+    if target_doc_id:
+        matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
+        if matching_scope:
+            active_scope_name = matching_scope["filename"]
+
     history_records = SESSION_MEMORY_BUFFER.get(session_id, [])
     model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
         user_question_text=payload.message_text,
         retrieved_context_chunks=matched_chunks,
         user_name=user_name_identifier,
-        conversation_history=history_records
+        conversation_history=history_records,
+        doc_inventory=user_doc_inventory,
+        active_filter=active_scope_name
     )
     history_records.append({"role": "user", "content": payload.message_text})
     history_records.append({"role": "assistant", "content": model_answer})
@@ -315,18 +352,35 @@ async def send_message_in_thread(
     )
     database_session.add(user_msg)
 
+    thread_doc_id = thread.document_id
+
     matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
         database_session=database_session,
         user_query_text=payload.message_text,
-        filter_document_id=thread.document_id,
+        filter_document_id=thread_doc_id,
         filter_user_id=current_user.id,
-        maximum_results_count=10 if target_doc_id is not None else 8
+        maximum_results_count=10 if thread_doc_id is not None else 8
     )
+
+    inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count).where(DocumentRecord.user_id == current_user.id)
+    inventory_result = await database_session.execute(inventory_stmt)
+    user_doc_inventory = [
+        {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
+        for row in inventory_result.all()
+    ]
+
+    active_scope_name = "All documents"
+    if thread_doc_id:
+        matching_scope = next((item for item in user_doc_inventory if item["id"] == thread_doc_id), None)
+        if matching_scope:
+            active_scope_name = matching_scope["filename"]
 
     model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
         user_question_text=payload.message_text,
         retrieved_context_chunks=matched_chunks,
-        user_name=current_user.username
+        user_name=current_user.username,
+        doc_inventory=user_doc_inventory,
+        active_filter=active_scope_name
     )
 
     bot_msg = ConversationMessageRecord(

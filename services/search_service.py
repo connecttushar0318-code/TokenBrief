@@ -43,7 +43,7 @@ class VectorSimilaritySearchEngine:
         if filter_user_id is not None:
             search_query = search_query.where(DocumentRecord.user_id == filter_user_id)
 
-        candidate_fetch_limit = 20 if filter_document_id is not None else max(maximum_results_count * 2, 8)
+        candidate_fetch_limit = 25 if filter_document_id is not None else max(maximum_results_count * 4, 35)
         search_query = search_query.order_by(cosine_distance_column).limit(candidate_fetch_limit)
 
         query_result = await database_session.execute(search_query)
