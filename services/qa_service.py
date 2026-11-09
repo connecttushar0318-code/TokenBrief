@@ -54,6 +54,36 @@ class DocumentQuestionAnsweringService:
         return False
 
     @classmethod
+    def handle_conversational_query(cls, text: str, user_name: Optional[str] = None) -> Optional[str]:
+        clean_prompt = text.strip().lower()
+        clean_no_punct = re.sub(r"[^\w\s]", "", clean_prompt)
+        display_name = cls.format_user_display_name(user_name, prompt_text=text)
+
+        if any(clean_no_punct.startswith(k) or clean_no_punct == k for k in ["how are you", "how are you doing", "hows it going", "how are things", "how do you do"]):
+            return f"I'm doing wonderful, {display_name}! 😊 Ready to assist you with any questions, analysis, or summaries across your workspace documents. What would you like to explore?"
+
+        if any(k in clean_no_punct for k in ["what are you doing", "what r u doing", "what are you working on"]):
+            return f"I'm actively monitoring your TokenBrief workspace, keeping all your documents parsed and indexed so you can ask deep questions or get instant summaries. What file would you like to check?"
+
+        if any(k in clean_no_punct for k in ["who are you", "what is your name", "what are you called", "who created you"]):
+            return "I am **TokenBrief AI**, an intelligent document intelligence assistant. I analyze your uploaded documents (PDFs, TXT, Markdown) using deep learning embeddings and semantic comprehension to answer questions, find exact metrics, and produce executive summaries."
+
+        if any(k in clean_no_punct for k in ["what can you do", "what are your features", "how can you help"]):
+            return (
+                "Here is what I can do for you in TokenBrief:\n\n"
+                "• **Semantic Document Q&A**: Ask questions in natural language and receive grounded answers with citations.\n"
+                "• **Exact Fact & Metric Retrieval**: Locate numbers, percentages, dates, scores, and key entities.\n"
+                "• **In-Depth Summarization**: Generate executive overviews and key takeaways for entire files.\n"
+                "• **Structured Topic Breakdown**: Categorize skills, projects, methodologies, and findings.\n\n"
+                "Feel free to ask a question about your uploaded files!"
+            )
+
+        if clean_no_punct in ["thank you", "thanks", "thanks a lot", "thank you so much", "awesome", "great", "cool", "perfect", "good job"]:
+            return f"You're very welcome, {display_name}! Feel free to ask whenever you need more insights or document summaries."
+
+        return None
+
+    @classmethod
     def clean_extracted_text(cls, raw_text: str) -> str:
         normalized_text = re.sub(r"(\w+)-\s*\n\s*(\w+)", r"\1\2", raw_text)
         normalized_text = re.sub(r"\be\s*nd-to-end\b", "end-to-end", normalized_text, flags=re.IGNORECASE)
@@ -198,6 +228,10 @@ class DocumentQuestionAnsweringService:
         full_stitched_text = cls.stitch_overlapping_chunks(chunk_text_collection)
         cleaned_document_body = cls.clean_extracted_text(full_stitched_text)
         detected_sections = cls.parse_document_sections(cleaned_document_body)
+
+        conversational_reply = cls.handle_conversational_query(user_question_text, user_name)
+        if conversational_reply:
+            return conversational_reply
 
         if cls.is_greeting(user_question_text):
             return cls.handle_greeting_response(
@@ -350,15 +384,24 @@ class DocumentQuestionAnsweringService:
                     + f"\n\n*(Source: {primary_document_name})*"
                 )
 
-        if any(keyword in lowered_query for keyword in ["who is", "profile", "overview", "background", "summary", "candidate"]):
-            summary_section_text = detected_sections.get("SUMMARY", "") or detected_sections.get("Overview", "")
-            overall_bullets = cls.extract_clean_bullets(cleaned_document_body)[:4]
+        if any(keyword in lowered_query for keyword in ["summarize", "summary", "overview", "who is", "profile", "background", "candidate", "about this document", "explain this file", "what is this document"]):
+            summary_section_text = (
+                detected_sections.get("SUMMARY", "") or
+                detected_sections.get("Overview", "") or
+                detected_sections.get("ABSTRACT", "") or
+                detected_sections.get("INTRODUCTION", "")
+            )
+            overall_bullets = cls.extract_clean_bullets(cleaned_document_body)[:5]
+            bullet_lines = [f"• {bullet}" for bullet in overall_bullets]
+            detected_topics_list = [section_title.capitalize() for section_title in detected_sections.keys() if section_title not in ["Header", "Overview"]]
+            sections_summary_text = f"\n\n**Structured Sections Identified**: {', '.join(detected_topics_list[:6])}." if detected_topics_list else ""
             return (
-                f"**Profile Overview & Background (from {primary_document_name}):**\n\n"
+                f"**In-Depth Document Summary for {primary_document_name}:**\n\n"
                 f"{summary_section_text}\n\n"
-                f"**Key Highlights:**\n"
-                + "\n".join(f"• {bullet}" for bullet in overall_bullets)
-                + f"\n\n*(Source: {primary_document_name})*"
+                f"**Key Highlights & Takeaways:**\n"
+                + "\n".join(bullet_lines)
+                + f"{sections_summary_text}\n\n"
+                + f"*(Source: {primary_document_name})*"
             )
 
         query_embedding_vector = VectorEmbeddingGenerator.generate_single_embedding(user_question_text)
