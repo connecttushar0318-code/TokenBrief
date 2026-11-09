@@ -1,8 +1,10 @@
 import uuid
+import time
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, delete, func
 from typing import Optional, List
+from config import settings
 from database import get_database_session
 from models import (
     UserAccount,
@@ -28,6 +30,7 @@ from security import get_optional_authenticated_user, get_authenticated_user
 from services.search_service import VectorSimilaritySearchEngine
 from services.qa_service import DocumentQuestionAnsweringService
 from services.cache_service import SemanticQueryCacheService
+from services.analytics_service import AnalyticsDashboardService
 
 router = APIRouter(prefix="/api/qa", tags=["Q&A"])
 
@@ -51,6 +54,7 @@ async def ask_document_question(
     database_session: AsyncSession = Depends(get_database_session),
     optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
 ):
+    start_execution_time = time.perf_counter()
     try:
         user_identifier_id = optional_user_account.id if optional_user_account else None
         target_doc_id = question_payload.filter_document_id
@@ -79,6 +83,21 @@ async def ask_document_question(
             )
 
         if cached_hit:
+            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+            try:
+                await AnalyticsDashboardService.record_query_log(
+                    database_session=database_session,
+                    question_text=question_payload.question_text,
+                    latency_ms=latency_ms,
+                    cache_hit=True,
+                    model_used="Semantic Cache",
+                    estimated_token_count=max(10, (len(question_payload.question_text) + len(cached_hit["answer"])) // 4),
+                    user_id=user_identifier_id,
+                    document_id=target_doc_id
+                )
+            except Exception:
+                pass
+
             return AnswerWithSourcesResponse(
                 question_text=question_payload.question_text,
                 generated_answer=cached_hit["answer"],
@@ -135,6 +154,22 @@ async def ask_document_question(
                 document_id=target_doc_id
             )
 
+        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+        active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Neural Engine"
+        try:
+            await AnalyticsDashboardService.record_query_log(
+                database_session=database_session,
+                question_text=question_payload.question_text,
+                latency_ms=latency_ms,
+                cache_hit=False,
+                model_used=active_model,
+                estimated_token_count=max(15, (len(question_payload.question_text) + len(model_answer)) // 4),
+                user_id=user_identifier_id,
+                document_id=target_doc_id
+            )
+        except Exception:
+            pass
+
         return AnswerWithSourcesResponse(
             question_text=question_payload.question_text,
             generated_answer=model_answer,
@@ -159,6 +194,7 @@ async def convenient_quick_chat(
     database_session: AsyncSession = Depends(get_database_session),
     optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
 ):
+    start_execution_time = time.perf_counter()
     session_id = payload.session_id or uuid.uuid4().hex
     user_id = optional_user_account.id if optional_user_account else None
 
@@ -186,6 +222,21 @@ async def convenient_quick_chat(
         )
 
     if cached_hit:
+        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+        try:
+            await AnalyticsDashboardService.record_query_log(
+                database_session=database_session,
+                question_text=payload.message_text,
+                latency_ms=latency_ms,
+                cache_hit=True,
+                model_used="Semantic Cache",
+                estimated_token_count=max(10, (len(payload.message_text) + len(cached_hit["answer"])) // 4),
+                user_id=user_id,
+                document_id=target_doc_id
+            )
+        except Exception:
+            pass
+
         return QuickChatResponse(
             session_id=session_id,
             answer=cached_hit["answer"],
@@ -247,6 +298,22 @@ async def convenient_quick_chat(
             sources=[s.model_dump() for s in sources],
             document_id=target_doc_id
         )
+
+    latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+    active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Neural Engine"
+    try:
+        await AnalyticsDashboardService.record_query_log(
+            database_session=database_session,
+            question_text=payload.message_text,
+            latency_ms=latency_ms,
+            cache_hit=False,
+            model_used=active_model,
+            estimated_token_count=max(15, (len(payload.message_text) + len(model_answer)) // 4),
+            user_id=user_id,
+            document_id=target_doc_id
+        )
+    except Exception:
+        pass
 
     return QuickChatResponse(
         session_id=session_id,

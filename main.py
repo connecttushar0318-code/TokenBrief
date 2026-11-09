@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from database import initialize_database_tables
-from routers import auth, documents, qa, admin
+from routers import auth, documents, qa, admin, quiz, analytics, export, entities, annotations
 from config import settings
 
 @asynccontextmanager
@@ -40,6 +40,11 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(qa.router)
 app.include_router(admin.router)
+app.include_router(quiz.router)
+app.include_router(analytics.router)
+app.include_router(export.router)
+app.include_router(entities.router)
+app.include_router(annotations.router)
 
 @app.get("/")
 async def get_system_status():

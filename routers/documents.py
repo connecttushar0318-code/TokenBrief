@@ -10,12 +10,18 @@ from sqlalchemy import select
 from config import settings
 from database import get_database_session
 from models import DocumentRecord, DocumentChunkRecord, UserAccount
-from schemas import DocumentMetadataResponse, DocumentSummaryResponse
+from schemas import (
+    DocumentMetadataResponse,
+    DocumentSummaryResponse,
+    DocumentComparisonRequest,
+    DocumentComparisonResponse
+)
 from security import get_optional_authenticated_user
 from services.pdf_service import PDFTextExtractor
 from services.chunking_service import DocumentTextChunker
 from services.embedding_service import VectorEmbeddingGenerator
 from services.qa_service import DocumentQuestionAnsweringService
+from services.comparison_service import DocumentComparisonService
 from google import genai
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
@@ -385,6 +391,29 @@ async def generate_document_summary(
         key_takeaways=takeaways or ["Comprehensive domain overview indexed in knowledge base"],
         topics=topics or ["General", "Analysis", "Data", "Knowledge"]
     )
+
+@router.post("/compare", response_model=DocumentComparisonResponse)
+async def compare_multiple_documents(
+    comparison_request: DocumentComparisonRequest,
+    database_session: AsyncSession = Depends(get_database_session),
+    optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
+):
+    try:
+        comparison_result = await DocumentComparisonService.compare_documents(
+            document_ids=comparison_request.document_ids,
+            database_session=database_session
+        )
+        return comparison_result
+    except ValueError as val_error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(val_error)
+        )
+    except Exception as general_error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document comparison failed: {str(general_error)}"
+        )
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document_by_id(

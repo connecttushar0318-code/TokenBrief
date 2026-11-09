@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, func, Float
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from database import Base
@@ -42,6 +42,9 @@ class DocumentRecord(Base):
 
     owner = relationship("UserAccount", back_populates="documents")
     chunks = relationship("DocumentChunkRecord", back_populates="document", cascade="all, delete-orphan")
+    quiz_questions = relationship("QuizQuestionRecord", back_populates="document", cascade="all, delete-orphan")
+    entities = relationship("DocumentEntityRecord", back_populates="document", cascade="all, delete-orphan")
+    annotations = relationship("UserAnnotationRecord", back_populates="document", cascade="all, delete-orphan")
 
 class DocumentChunkRecord(Base):
     __tablename__ = "document_chunk_records"
@@ -89,3 +92,99 @@ class ConversationMessageRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     thread = relationship("ConversationThreadRecord", back_populates="messages")
+
+class QuizQuestionRecord(Base):
+    __tablename__ = "quiz_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_text = Column(Text, nullable=False)
+    option_a = Column(Text, nullable=False)
+    option_b = Column(Text, nullable=False)
+    option_c = Column(Text, nullable=False)
+    option_d = Column(Text, nullable=False)
+    correct_option = Column(String(10), nullable=False)
+    explanation = Column(Text, nullable=True)
+    source_page_number = Column(Integer, nullable=True)
+    difficulty = Column(String(20), default="medium", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("DocumentRecord", back_populates="quiz_questions")
+    answers = relationship("QuizAnswerRecord", back_populates="question", cascade="all, delete-orphan")
+
+class QuizAttemptRecord(Base):
+    __tablename__ = "quiz_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    total_questions = Column(Integer, nullable=False)
+    correct_count = Column(Integer, nullable=False)
+    score_percentage = Column(Float, nullable=False)
+    completed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("UserAccount")
+    document = relationship("DocumentRecord")
+    answers = relationship("QuizAnswerRecord", back_populates="attempt", cascade="all, delete-orphan")
+
+class QuizAnswerRecord(Base):
+    __tablename__ = "quiz_answers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attempt_id = Column(Integer, ForeignKey("quiz_attempts.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(Integer, ForeignKey("quiz_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    selected_option = Column(String(10), nullable=False)
+    is_correct = Column(Boolean, nullable=False)
+    answered_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    attempt = relationship("QuizAttemptRecord", back_populates="answers")
+    question = relationship("QuizQuestionRecord", back_populates="answers")
+
+class QueryLogRecord(Base):
+    __tablename__ = "query_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("user_accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="SET NULL"), nullable=True, index=True)
+    question_text = Column(Text, nullable=False)
+    latency_ms = Column(Float, nullable=False)
+    cache_hit = Column(Boolean, default=False, nullable=False)
+    model_used = Column(String(100), nullable=False)
+    estimated_token_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("UserAccount")
+    document = relationship("DocumentRecord")
+
+class DocumentEntityRecord(Base):
+    __tablename__ = "document_entities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_text = Column(String(255), nullable=False, index=True)
+    entity_type = Column(String(50), nullable=False, index=True)
+    source_page_number = Column(Integer, nullable=True)
+    occurrence_count = Column(Integer, default=1, nullable=False)
+    confidence_score = Column(Float, default=1.0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("DocumentRecord", back_populates="entities")
+
+class UserAnnotationRecord(Base):
+    __tablename__ = "user_annotations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(Integer, ForeignKey("document_chunk_records.id", ondelete="SET NULL"), nullable=True, index=True)
+    highlighted_text = Column(Text, nullable=False)
+    annotation_note = Column(Text, nullable=True)
+    color_code = Column(String(30), default="yellow", nullable=False)
+    source_page_number = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("UserAccount")
+    document = relationship("DocumentRecord", back_populates="annotations")
+    chunk = relationship("DocumentChunkRecord")
+
