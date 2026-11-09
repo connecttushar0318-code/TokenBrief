@@ -31,6 +31,10 @@ from services.search_service import VectorSimilaritySearchEngine
 from services.qa_service import DocumentQuestionAnsweringService
 from services.cache_service import SemanticQueryCacheService
 from services.analytics_service import AnalyticsDashboardService
+from services.query_router import QueryIntentRouterService, QueryIntent
+from services.hierarchical_service import HierarchicalDocumentSummaryService
+from services.guardrails_service import HallucinationGuardrailService
+from services.comparison_service import DocumentComparisonService
 
 router = APIRouter(prefix="/api/qa", tags=["Q&A"])
 
@@ -61,6 +65,88 @@ async def ask_document_question(
         if target_doc_id == 0:
             target_doc_id = None
 
+        inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
+        if user_identifier_id:
+            inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_identifier_id)
+        inventory_result = await database_session.execute(inventory_stmt)
+        user_doc_inventory = [
+            {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
+            for row in inventory_result.all()
+        ]
+
+        intent_decision = QueryIntentRouterService.classify_query_intent(
+            user_query_text=question_payload.question_text,
+            filter_document_id=target_doc_id,
+            available_documents=user_doc_inventory
+        )
+
+        if intent_decision["intent"] == QueryIntent.GLOBAL_SUMMARY:
+            target_summary_id = target_doc_id or (user_doc_inventory[0]["id"] if user_doc_inventory else None)
+            if target_summary_id:
+                hierarchical_data = await HierarchicalDocumentSummaryService.get_or_build_hierarchical_summary(
+                    document_id=target_summary_id,
+                    database_session=database_session
+                )
+                formatted_summary = (
+                    f"**Executive Document Summary for '{hierarchical_data['filename']}' ({hierarchical_data['total_sections']} Sections):**\n\n"
+                    f"{hierarchical_data['executive_summary']}\n\n"
+                    "**Key Takeaways:**\n"
+                    + "\n".join(f"- {t}" for t in hierarchical_data['key_takeaways'])
+                )
+                latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+                try:
+                    await AnalyticsDashboardService.record_query_log(
+                        database_session=database_session,
+                        question_text=question_payload.question_text,
+                        latency_ms=latency_ms,
+                        cache_hit=False,
+                        model_used="Hierarchical Map-Reduce Engine",
+                        estimated_token_count=max(20, len(formatted_summary) // 4),
+                        user_id=user_identifier_id,
+                        document_id=target_summary_id
+                    )
+                except Exception:
+                    pass
+
+                return AnswerWithSourcesResponse(
+                    question_text=question_payload.question_text,
+                    generated_answer=formatted_summary,
+                    source_chunks=[],
+                    cache_hit=False
+                )
+
+        if intent_decision["intent"] == QueryIntent.MULTI_DOC_COMPARE and len(intent_decision.get("matched_doc_ids", [])) >= 2:
+            comparison_data = await DocumentComparisonService.compare_documents(
+                document_ids=intent_decision["matched_doc_ids"][:4],
+                database_session=database_session
+            )
+            matrix_bullets = [f"- **{r.criterion}:** {r.key_difference}" for r in comparison_data.comparison_matrix]
+            formatted_comparison = (
+                f"**Cross-Document Comparison:**\n\n{comparison_data.synthesis_verdict}\n\n"
+                f"**Key Structural Differences:**\n" + "\n".join(matrix_bullets)
+            )
+            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+            try:
+                await AnalyticsDashboardService.record_query_log(
+                    database_session=database_session,
+                    question_text=question_payload.question_text,
+                    latency_ms=latency_ms,
+                    cache_hit=False,
+                    model_used="Document Comparison Engine",
+                    estimated_token_count=max(20, len(formatted_comparison) // 4),
+                    user_id=user_identifier_id,
+                    document_id=None
+                )
+            except Exception:
+                pass
+
+            return AnswerWithSourcesResponse(
+                question_text=question_payload.question_text,
+                generated_answer=formatted_comparison,
+                source_chunks=[],
+                cache_hit=False
+            )
+
         matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
             database_session=database_session,
             user_query_text=question_payload.question_text,
@@ -68,6 +154,34 @@ async def ask_document_question(
             filter_user_id=user_identifier_id,
             maximum_results_count=question_payload.maximum_results
         )
+
+        should_abstain, abstention_message = HallucinationGuardrailService.evaluate_retrieval_confidence(
+            retrieved_chunks=matched_chunks,
+            query_text=question_payload.question_text,
+            confidence_threshold=25.0
+        )
+        if should_abstain and abstention_message:
+            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+            try:
+                await AnalyticsDashboardService.record_query_log(
+                    database_session=database_session,
+                    question_text=question_payload.question_text,
+                    latency_ms=latency_ms,
+                    cache_hit=False,
+                    model_used="Hallucination Guardrail",
+                    estimated_token_count=15,
+                    user_id=user_identifier_id,
+                    document_id=target_doc_id
+                )
+            except Exception:
+                pass
+
+            return AnswerWithSourcesResponse(
+                question_text=question_payload.question_text,
+                generated_answer=abstention_message,
+                source_chunks=[],
+                cache_hit=False
+            )
 
         can_use_cache = _can_use_document_cache(
             question_payload.question_text,
@@ -108,15 +222,6 @@ async def ask_document_question(
 
         user_name_identifier = optional_user_account.username if optional_user_account else None
 
-        inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
-        if user_identifier_id:
-            inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_identifier_id)
-        inventory_result = await database_session.execute(inventory_stmt)
-        user_doc_inventory = [
-            {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
-            for row in inventory_result.all()
-        ]
-
         active_scope_name = "All documents"
         if target_doc_id:
             matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
@@ -129,6 +234,11 @@ async def ask_document_question(
             user_name=user_name_identifier,
             doc_inventory=user_doc_inventory,
             active_filter=active_scope_name
+        )
+
+        verified_answer, _ = HallucinationGuardrailService.verify_and_align_citations(
+            answer_text=model_answer,
+            retrieved_chunks=matched_chunks
         )
 
         source_references = [
@@ -149,7 +259,7 @@ async def ask_document_question(
                 database_session=database_session,
                 query_text=question_payload.question_text,
                 query_vector=query_vector,
-                answer_text=model_answer,
+                answer_text=verified_answer,
                 sources=[s.model_dump() for s in source_references],
                 document_id=target_doc_id
             )
@@ -163,7 +273,7 @@ async def ask_document_question(
                 latency_ms=latency_ms,
                 cache_hit=False,
                 model_used=active_model,
-                estimated_token_count=max(15, (len(question_payload.question_text) + len(model_answer)) // 4),
+                estimated_token_count=max(15, (len(question_payload.question_text) + len(verified_answer)) // 4),
                 user_id=user_identifier_id,
                 document_id=target_doc_id
             )
@@ -172,7 +282,7 @@ async def ask_document_question(
 
         return AnswerWithSourcesResponse(
             question_text=question_payload.question_text,
-            generated_answer=model_answer,
+            generated_answer=verified_answer,
             source_chunks=source_references,
             cache_hit=False
         )
@@ -197,8 +307,89 @@ async def convenient_quick_chat(
     start_execution_time = time.perf_counter()
     session_id = payload.session_id or uuid.uuid4().hex
     user_id = optional_user_account.id if optional_user_account else None
-
     target_doc_id = payload.document_id or None
+
+    inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
+    if user_id:
+        inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_id)
+    inventory_result = await database_session.execute(inventory_stmt)
+    user_doc_inventory = [
+        {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
+        for row in inventory_result.all()
+    ]
+
+    intent_decision = QueryIntentRouterService.classify_query_intent(
+        user_query_text=payload.message_text,
+        filter_document_id=target_doc_id,
+        available_documents=user_doc_inventory
+    )
+
+    if intent_decision["intent"] == QueryIntent.GLOBAL_SUMMARY:
+        target_summary_id = target_doc_id or (user_doc_inventory[0]["id"] if user_doc_inventory else None)
+        if target_summary_id:
+            hierarchical_data = await HierarchicalDocumentSummaryService.get_or_build_hierarchical_summary(
+                document_id=target_summary_id,
+                database_session=database_session
+            )
+            formatted_summary = (
+                f"**Executive Document Summary for '{hierarchical_data['filename']}' ({hierarchical_data['total_sections']} Sections):**\n\n"
+                f"{hierarchical_data['executive_summary']}\n\n"
+                "**Key Takeaways:**\n"
+                + "\n".join(f"- {t}" for t in hierarchical_data['key_takeaways'])
+            )
+            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+            try:
+                await AnalyticsDashboardService.record_query_log(
+                    database_session=database_session,
+                    question_text=payload.message_text,
+                    latency_ms=latency_ms,
+                    cache_hit=False,
+                    model_used="Hierarchical Map-Reduce Engine",
+                    estimated_token_count=max(20, len(formatted_summary) // 4),
+                    user_id=user_id,
+                    document_id=target_summary_id
+                )
+            except Exception:
+                pass
+
+            return QuickChatResponse(
+                session_id=session_id,
+                answer=formatted_summary,
+                sources=[],
+                cache_hit=False
+            )
+
+    if intent_decision["intent"] == QueryIntent.MULTI_DOC_COMPARE and len(intent_decision.get("matched_doc_ids", [])) >= 2:
+        comparison_data = await DocumentComparisonService.compare_documents(
+            document_ids=intent_decision["matched_doc_ids"][:4],
+            database_session=database_session
+        )
+        matrix_bullets = [f"- **{r.criterion}:** {r.key_difference}" for r in comparison_data.comparison_matrix]
+        formatted_comparison = (
+            f"**Cross-Document Comparison:**\n\n{comparison_data.synthesis_verdict}\n\n"
+            f"**Key Structural Differences:**\n" + "\n".join(matrix_bullets)
+        )
+        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+        try:
+            await AnalyticsDashboardService.record_query_log(
+                database_session=database_session,
+                question_text=payload.message_text,
+                latency_ms=latency_ms,
+                cache_hit=False,
+                model_used="Document Comparison Engine",
+                estimated_token_count=max(20, len(formatted_comparison) // 4),
+                user_id=user_id,
+                document_id=None
+            )
+        except Exception:
+            pass
+
+        return QuickChatResponse(
+            session_id=session_id,
+            answer=formatted_comparison,
+            sources=[],
+            cache_hit=False
+        )
 
     matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
         database_session=database_session,
@@ -207,6 +398,34 @@ async def convenient_quick_chat(
         filter_user_id=user_id,
         maximum_results_count=10 if target_doc_id is not None else 8
     )
+
+    should_abstain, abstention_message = HallucinationGuardrailService.evaluate_retrieval_confidence(
+        retrieved_chunks=matched_chunks,
+        query_text=payload.message_text,
+        confidence_threshold=25.0
+    )
+    if should_abstain and abstention_message:
+        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
+        try:
+            await AnalyticsDashboardService.record_query_log(
+                database_session=database_session,
+                question_text=payload.message_text,
+                latency_ms=latency_ms,
+                cache_hit=False,
+                model_used="Hallucination Guardrail",
+                estimated_token_count=15,
+                user_id=user_id,
+                document_id=target_doc_id
+            )
+        except Exception:
+            pass
+
+        return QuickChatResponse(
+            session_id=session_id,
+            answer=abstention_message,
+            sources=[],
+            cache_hit=False
+        )
 
     can_use_cache = _can_use_document_cache(
         payload.message_text,
@@ -246,15 +465,6 @@ async def convenient_quick_chat(
 
     user_name_identifier = optional_user_account.username if optional_user_account else None
 
-    inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count)
-    if user_id:
-        inventory_stmt = inventory_stmt.where(DocumentRecord.user_id == user_id)
-    inventory_result = await database_session.execute(inventory_stmt)
-    user_doc_inventory = [
-        {"id": row.id, "filename": row.filename, "pages": row.total_page_count or 1}
-        for row in inventory_result.all()
-    ]
-
     active_scope_name = "All documents"
     if target_doc_id:
         matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
@@ -270,8 +480,14 @@ async def convenient_quick_chat(
         doc_inventory=user_doc_inventory,
         active_filter=active_scope_name
     )
+
+    verified_answer, _ = HallucinationGuardrailService.verify_and_align_citations(
+        answer_text=model_answer,
+        retrieved_chunks=matched_chunks
+    )
+
     history_records.append({"role": "user", "content": payload.message_text})
-    history_records.append({"role": "assistant", "content": model_answer})
+    history_records.append({"role": "assistant", "content": verified_answer})
     if len(history_records) > 8:
         history_records = history_records[-8:]
     SESSION_MEMORY_BUFFER[session_id] = history_records
@@ -294,7 +510,7 @@ async def convenient_quick_chat(
             database_session=database_session,
             query_text=payload.message_text,
             query_vector=query_vector,
-            answer_text=model_answer,
+            answer_text=verified_answer,
             sources=[s.model_dump() for s in sources],
             document_id=target_doc_id
         )
@@ -308,7 +524,7 @@ async def convenient_quick_chat(
             latency_ms=latency_ms,
             cache_hit=False,
             model_used=active_model,
-            estimated_token_count=max(15, (len(payload.message_text) + len(model_answer)) // 4),
+            estimated_token_count=max(15, (len(payload.message_text) + len(verified_answer)) // 4),
             user_id=user_id,
             document_id=target_doc_id
         )
@@ -317,7 +533,7 @@ async def convenient_quick_chat(
 
     return QuickChatResponse(
         session_id=session_id,
-        answer=model_answer,
+        answer=verified_answer,
         sources=sources,
         cache_hit=False
     )

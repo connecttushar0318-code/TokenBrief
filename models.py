@@ -45,6 +45,22 @@ class DocumentRecord(Base):
     quiz_questions = relationship("QuizQuestionRecord", back_populates="document", cascade="all, delete-orphan")
     entities = relationship("DocumentEntityRecord", back_populates="document", cascade="all, delete-orphan")
     annotations = relationship("UserAnnotationRecord", back_populates="document", cascade="all, delete-orphan")
+    sections = relationship("DocumentSectionRecord", back_populates="document", cascade="all, delete-orphan")
+
+class DocumentSectionRecord(Base):
+    __tablename__ = "document_sections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("document_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    section_index = Column(Integer, nullable=False)
+    page_start = Column(Integer, nullable=False)
+    page_end = Column(Integer, nullable=False)
+    section_title = Column(String(255), nullable=True)
+    section_summary = Column(Text, nullable=False)
+    key_bullet_points = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("DocumentRecord", back_populates="sections")
 
 class DocumentChunkRecord(Base):
     __tablename__ = "document_chunk_records"
