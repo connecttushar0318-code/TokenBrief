@@ -4,10 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ArrowRightLeft,
+  BarChart3,
   BookOpen,
   Bot,
   Check,
   Copy,
+  Download,
   ExternalLink,
   FileCheck2,
   FileText,
@@ -15,8 +18,10 @@ import {
   Home,
   Layers,
   LogOut,
+  Network,
   Search,
   Send,
+  Sliders,
   Sparkles,
   Trash2,
   User as UserIcon,
@@ -28,6 +33,12 @@ import { DynamicAnalyticsChart } from "@/components/dynamic-analytics-chart";
 import { DocumentUploadCard } from "@/components/document-upload-card";
 import { MetricsCards } from "@/components/metrics-cards";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { RealAnalyticsDashboard } from "@/components/real-analytics-dashboard";
+import { InteractiveQuizStudio } from "@/components/interactive-quiz-studio";
+import { DocumentComparisonView } from "@/components/document-comparison-view";
+import { KnowledgeGraphVisualizer } from "@/components/knowledge-graph-visualizer";
+import { UserProfileModal } from "@/components/user-profile-modal";
+import { CitationAnnotationsModal } from "@/components/citation-annotations-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -98,12 +109,53 @@ export default function DashboardPage() {
   const [activeSummary, setActiveSummary] = useState<SummaryData | null>(null);
   const [summarizingDocId, setSummarizingDocId] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"workspace" | "quiz" | "compare" | "graph" | "analytics">("workspace");
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [userData, setUserData] = useState<any>(null);
   const [currentUser, setCurrentUser] = useState("tushar");
   const [expandedSourceChunk, setExpandedSourceChunk] = useState<SourceItem | null>(null);
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [latencyMs, setLatencyMs] = useState(420);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const handleExportPdf = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    try {
+      const formattedMessages = messages.map((m) => ({
+        sender_role: m.sender,
+        message_text: m.text,
+      }));
+      const res = await fetch(`${API_BASE_URL}/api/export/pdf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          session_title: "TokenBrief Intelligence Report",
+          document_ids: selectedDocId ? [selectedDocId] : documents.map((d) => d.id),
+          messages: formattedMessages.length > 0 ? formattedMessages : [
+            { sender_role: "assistant", message_text: activeSummary?.executive_summary || "Document workspace analysis." }
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error("PDF report generation failed.");
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `TokenBrief_Report_${Date.now()}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: any) {
+      alert("Export failed: " + err.message);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   const handleToggleAudioBrief = () => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -147,6 +199,7 @@ export default function DashboardPage() {
       if (response.ok) {
         const data = await response.json();
         setCurrentUser(data.username || "tushar");
+        setUserData(data);
       }
     } catch {}
   };
@@ -298,12 +351,28 @@ export default function DashboardPage() {
           </Link>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <div className="hidden items-center gap-2 text-sm sm:flex">
+            <button
+              type="button"
+              onClick={() => setIsProfileOpen(true)}
+              className="flex items-center gap-2 rounded-lg p-1 text-sm transition-colors hover:bg-muted"
+              title="Edit Profile & Account"
+            >
               <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">
                 {currentUser.slice(0, 1).toUpperCase()}
               </div>
-              <span className="max-w-28 truncate text-xs font-medium text-muted-foreground">{currentUser}</span>
-            </div>
+              <span className="max-w-28 truncate text-xs font-medium text-muted-foreground hidden sm:inline">{currentUser}</span>
+            </button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf}
+              className="gap-1.5 text-xs h-8 px-2.5"
+              title="Export workspace session as branded PDF"
+            >
+              <Download className="h-3.5 w-3.5 text-primary" />
+              <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
+            </Button>
             <Button
               variant={isSpeaking ? "default" : "outline"}
               size="sm"
@@ -350,15 +419,74 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <MetricsCards
-          data={{
-            totalDocuments: documents.length,
-            averageLatencyMs: latencyMs,
-            securityStatus: "Active",
-          }}
-        />
+        {/* Tab Navigation Controls */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-border/80 pb-3">
+          <Button
+            variant={activeTab === "workspace" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveTab("workspace")}
+            className="gap-2 text-xs font-semibold"
+          >
+            <Bot className="h-3.5 w-3.5" />
+            <span>Workspace & Chat</span>
+          </Button>
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_21rem]">
+          <Button
+            variant={activeTab === "quiz" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveTab("quiz")}
+            className="gap-2 text-xs font-semibold"
+          >
+            <Sliders className="h-3.5 w-3.5" />
+            <span>Quiz Studio</span>
+            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
+          </Button>
+
+          <Button
+            variant={activeTab === "compare" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveTab("compare")}
+            className="gap-2 text-xs font-semibold"
+          >
+            <ArrowRightLeft className="h-3.5 w-3.5" />
+            <span>Compare Docs</span>
+            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
+          </Button>
+
+          <Button
+            variant={activeTab === "graph" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveTab("graph")}
+            className="gap-2 text-xs font-semibold"
+          >
+            <Network className="h-3.5 w-3.5" />
+            <span>Knowledge Graph</span>
+            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
+          </Button>
+
+          <Button
+            variant={activeTab === "analytics" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveTab("analytics")}
+            className="gap-2 text-xs font-semibold"
+          >
+            <BarChart3 className="h-3.5 w-3.5" />
+            <span>Real Analytics</span>
+            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Live</Badge>
+          </Button>
+        </div>
+
+        {activeTab === "workspace" && (
+          <>
+            <MetricsCards
+              data={{
+                totalDocuments: documents.length,
+                averageLatencyMs: latencyMs,
+                securityStatus: "Active",
+              }}
+            />
+
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_21rem]">
           <div className="space-y-6">
             <Card className="flex h-[640px] min-h-[560px] flex-col">
               <CardHeader className="gap-3 border-b border-border/75 pb-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
@@ -688,81 +816,56 @@ export default function DashboardPage() {
             )}
           </aside>
         </div>
+          </>
+        )}
+
+        {activeTab === "quiz" && (
+          <InteractiveQuizStudio
+            apiBaseUrl={API_BASE_URL}
+            documents={documents}
+            initialDocId={selectedDocId}
+          />
+        )}
+
+        {activeTab === "compare" && (
+          <DocumentComparisonView
+            apiBaseUrl={API_BASE_URL}
+            documents={documents}
+          />
+        )}
+
+        {activeTab === "graph" && (
+          <KnowledgeGraphVisualizer
+            apiBaseUrl={API_BASE_URL}
+            documents={documents}
+            initialDocId={selectedDocId}
+          />
+        )}
+
+        {activeTab === "analytics" && (
+          <RealAnalyticsDashboard
+            apiBaseUrl={API_BASE_URL}
+          />
+        )}
       </main>
 
       {expandedSourceChunk && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="source-excerpt-title"
-            className="w-full max-w-xl rounded-2xl border border-primary/20 bg-card p-6 shadow-2xl"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-border/80 pb-4">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <FileText className="h-3.5 w-3.5" />
-                  </span>
-                  <h2 id="source-excerpt-title" className="text-base font-semibold tracking-tight">
-                    Citation Inspector
-                  </h2>
-                </div>
-                <p className="mt-1 truncate text-xs font-medium text-primary">
-                  {expandedSourceChunk.document_filename}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setExpandedSourceChunk(null)}
-                className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                aria-label="Close source excerpt"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
-              <Badge variant="secondary" className="font-mono text-[11px] bg-primary/10 text-primary border-primary/20">
-                Page {expandedSourceChunk.source_page_number || 1}
-              </Badge>
-              <Badge variant="outline" className="text-[11px]">
-                Grounding Match {expandedSourceChunk.similarity_percentage}%
-              </Badge>
-              <span className="text-[11px] text-muted-foreground">
-                Verified against workspace index
-              </span>
-            </div>
-
-            <div className="mt-4 rounded-xl border border-border bg-muted/40 p-4 text-xs sm:text-sm leading-relaxed max-h-72 overflow-y-auto">
-              <div className="whitespace-pre-wrap font-sans text-foreground/90 selection:bg-amber-300 selection:text-amber-950">
-                {expandedSourceChunk.chunk_text_content.replace(/\[Document:[^\]]+\]\n?/g, "")}
-              </div>
-            </div>
-
-            <div className="mt-5 flex items-center justify-between gap-3 border-t border-border/70 pt-4">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const targetDoc = documents.find((d) => d.filename === expandedSourceChunk.document_filename);
-                  if (targetDoc) {
-                    handleSummarizeDoc(targetDoc.id);
-                  }
-                  setExpandedSourceChunk(null);
-                }}
-                className="gap-1.5 text-xs"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
-                <span>Summarize Full File</span>
-              </Button>
-              <Button size="sm" onClick={() => setExpandedSourceChunk(null)} className="text-xs px-4">
-                Done
-              </Button>
-            </div>
-          </div>
-        </div>
+        <CitationAnnotationsModal
+          apiBaseUrl={API_BASE_URL}
+          sourceChunk={expandedSourceChunk}
+          onClose={() => setExpandedSourceChunk(null)}
+        />
       )}
+
+      <UserProfileModal
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
+        currentUser={currentUser}
+        emailAddress={userData?.email || `${currentUser}@tokenbrief.ai`}
+        role={userData?.role || "Member"}
+        createdAt={userData?.created_at}
+        totalDocuments={documents.length}
+      />
     </div>
   );
 }

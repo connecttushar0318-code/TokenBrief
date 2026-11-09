@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
-  variant?: "default" | "secondary" | "outline" | "success" | "warning";
+  variant?: "default" | "secondary" | "outline" | "success" | "warning" | "destructive";
 }
 
 export function Badge({
@@ -16,6 +16,7 @@ export function Badge({
     outline: "text-foreground border border-border",
     success: "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30",
     warning: "bg-amber-500/15 text-amber-500 border border-amber-500/30",
+    destructive: "bg-destructive/15 text-destructive border border-destructive/30",
   };
 
   return (
