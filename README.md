@@ -13,7 +13,7 @@
 
 | Component | Platform | Status | Live Link |
 |---|---|---|---|
-| **Frontend Web App** | **Vercel** | ![Production Ready](https://img.shields.io/badge/Vercel-Live-brightgreen?style=flat-square&logo=vercel) | [https://token-brief.vercel.app](https://token-brief.vercel.app) |
+| **Frontend Web App** | **Vercel** | ![Production Ready](https://img.shields.io/badge/Vercel-Live-brightgreen?style=flat-square&logo=vercel) | [https://token-brief-tushaar.vercel.app](https://token-brief-tushaar.vercel.app) |
 | **Backend API Server** | **Render / Koyeb / Docker** | ![API Active](https://img.shields.io/badge/FastAPI-Online-teal?style=flat-square&logo=fastapi) | [https://tokenbrief-backend.onrender.com](https://tokenbrief-backend.onrender.com) &bull; [Swagger Docs](https://tokenbrief-backend.onrender.com/docs) |
 | **Neon PostgreSQL + pgvector** | **AWS us-east-2** | ![Database Connected](https://img.shields.io/badge/Neon-Connected-blue?style=flat-square&logo=postgresql) | Managed Cloud Database Cluster |
 
