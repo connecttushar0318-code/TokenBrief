@@ -27,6 +27,8 @@ import {
 
 type AuthMode = "login" | "register" | "verify_otp" | "forgot_password" | "reset_password";
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<AuthMode>("login");
@@ -69,7 +71,7 @@ export default function LoginPage() {
           throw new Error(validation.error.errors[0]?.message);
         }
 
-        const res = await fetch("http://localhost:8000/api/auth/login", {
+        const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -105,7 +107,7 @@ export default function LoginPage() {
           throw new Error(validation.error.errors[0]?.message);
         }
 
-        const res = await fetch("http://localhost:8000/api/auth/register", {
+        const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -134,7 +136,7 @@ export default function LoginPage() {
           throw new Error("Please enter a valid 6-digit OTP code");
         }
 
-        const res = await fetch("http://localhost:8000/api/auth/verify-email", {
+        const res = await fetch(`${API_BASE_URL}/api/auth/verify-email`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -155,7 +157,7 @@ export default function LoginPage() {
           throw new Error("Please enter your registered email address");
         }
 
-        const res = await fetch("http://localhost:8000/api/auth/forgot-password", {
+        const res = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -185,7 +187,7 @@ export default function LoginPage() {
           throw new Error("New password must be at least 4 characters long");
         }
 
-        const res = await fetch("http://localhost:8000/api/auth/reset-password", {
+        const res = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -219,7 +221,7 @@ export default function LoginPage() {
     setIsLoading(true);
     resetMessages();
     try {
-      const res = await fetch("http://localhost:8000/api/auth/resend-otp", {
+      const res = await fetch(`${API_BASE_URL}/api/auth/resend-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
