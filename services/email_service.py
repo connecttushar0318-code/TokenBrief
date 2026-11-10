@@ -140,11 +140,21 @@ class EmailNotificationService:
             part = MIMEText(html_content, "html")
             msg.attach(part)
 
-            with smtplib.SMTP("smtp.gmail.com", 587, timeout=3) as server:
-                server.starttls()
-                server.login(settings.gmail_sender_email, settings.gmail_app_password.replace(" ", ""))
-                server.sendmail(settings.gmail_sender_email, recipient_email, msg.as_string())
-            return True
+            clean_pwd = settings.gmail_app_password.replace(" ", "").strip()
+            try:
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=7) as server:
+                    server.login(settings.gmail_sender_email.strip(), clean_pwd)
+                    server.sendmail(settings.gmail_sender_email.strip(), recipient_email.strip(), msg.as_string())
+                return True
+            except Exception:
+                try:
+                    with smtplib.SMTP("smtp.gmail.com", 587, timeout=5) as server:
+                        server.starttls()
+                        server.login(settings.gmail_sender_email.strip(), clean_pwd)
+                        server.sendmail(settings.gmail_sender_email.strip(), recipient_email.strip(), msg.as_string())
+                    return True
+                except Exception:
+                    return False
         except Exception:
             return False
 
