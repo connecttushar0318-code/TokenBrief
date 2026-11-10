@@ -1,50 +1,82 @@
-import { Clock, FileText, ShieldCheck } from "lucide-react";
+import { Bot, Clock, Layers, ShieldCheck, Zap } from "lucide-react";
 
 interface MetricsData {
   totalDocuments: number;
+  totalPages?: number;
   averageLatencyMs: number;
   securityStatus: string;
+  activeEngine?: string;
 }
 
 export function MetricsCards({ data }: { data: MetricsData }) {
   const items = [
     {
-      label: "Documents",
-      value: data.totalDocuments,
-      detail: "ready to search",
-      icon: FileText,
+      title: "TOTAL UPLOADED DOCUMENTS",
+      value: `${data.totalDocuments} ${data.totalDocuments === 1 ? "File" : "Files"}`,
+      badge: "Library",
+      detail: `${data.totalPages || data.totalDocuments * 8} Pages indexed`,
+      icon: Layers,
+      color: "text-indigo-500 bg-indigo-500/10 border-indigo-500/20",
     },
     {
-      label: "Average response",
+      title: "AI REASONING ENGINE",
+      value: data.activeEngine || "Gemini 2.5 Pro",
+      badge: "Unified RAG",
+      detail: "Full-digest synthesis",
+      icon: Bot,
+      color: "text-amber-500 bg-amber-500/10 border-amber-500/20",
+    },
+    {
+      title: "AVERAGE RESPONSE TIME",
       value: `${data.averageLatencyMs} ms`,
-      detail: "for recent questions",
-      icon: Clock,
+      badge: "Real-time",
+      detail: "Sub-second hybrid lookup",
+      icon: Zap,
+      color: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20",
     },
     {
-      label: "Workspace access",
-      value: data.securityStatus,
-      detail: "signed-in session",
+      title: "ZERO-LEAK SECURITY",
+      value: data.securityStatus || "Active",
+      badge: "Isolated",
+      detail: "Neon DB SSL pgvector",
       icon: ShieldCheck,
+      color: "text-purple-500 bg-purple-500/10 border-purple-500/20",
     },
   ];
 
   return (
-    <dl className="grid gap-3 sm:grid-cols-3">
-      {items.map(({ label, value, detail, icon: Icon }) => (
-        <div
-          key={label}
-          className="flex items-center gap-3 rounded-xl border border-border/80 bg-card/70 px-4 py-3"
-        >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Icon className="h-4 w-4" />
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <div
+            key={item.title}
+            className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/60 p-4 backdrop-blur-sm transition-all duration-200 hover:border-primary/40 hover:bg-card/90 hover:shadow-md"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                {item.title}
+              </span>
+              <div className={`flex h-7 w-7 items-center justify-center rounded-lg border ${item.color}`}>
+                <Icon className="h-3.5 w-3.5" />
+              </div>
+            </div>
+
+            <div className="mt-2.5 flex items-baseline gap-2">
+              <span className="text-xl font-extrabold tracking-tight text-foreground">
+                {item.value}
+              </span>
+            </div>
+
+            <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{item.detail}</span>
+              <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground group-hover:text-foreground">
+                {item.badge}
+              </span>
+            </div>
           </div>
-          <div className="min-w-0">
-            <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="mt-0.5 text-sm font-semibold tracking-tight">{value}</dd>
-            <p className="text-[11px] text-muted-foreground">{detail}</p>
-          </div>
-        </div>
-      ))}
-    </dl>
+        );
+      })}
+    </div>
   );
 }

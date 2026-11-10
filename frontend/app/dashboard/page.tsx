@@ -8,7 +8,9 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  Calendar,
   Check,
+  ChevronRight,
   Copy,
   Download,
   ExternalLink,
@@ -17,10 +19,12 @@ import {
   Headphones,
   Home,
   Layers,
+  LayoutDashboard,
   LogOut,
   Network,
   Search,
   Send,
+  Settings,
   Sliders,
   Sparkles,
   Trash2,
@@ -86,14 +90,241 @@ interface ChatSuggestion {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-const CHAT_SUGGESTIONS: ChatSuggestion[] = [
-  { label: "⚡ Skill-Gap & ATS Audit", query: "Run a Skill-Gap & ATS Audit comparing the resume against the curriculum/data mining syllabus. Highlight matched skills, missing technical topics, and ATS bullet rewrites." },
-  { label: "📝 Exam Prep / Viva Mode", query: "Generate 5 technical interview / exam prep questions strictly grounded in this document with answers and page citations." },
-  { label: "👤 Resume Executive Profile", query: "What is this resume all about?" },
-  { label: "🔬 WEKA & Data Mining Notes", query: "What is WEKA tool used for and what are the main experiments in DM File.pdf?" },
-  { label: "💡 What should I know?", query: "What are the most useful things to know from my documents?" },
-  { label: "🗂️ Compare my files", query: "What themes and skills are shared across my documents?" },
-];
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function getFormattedDate() {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date());
+  } catch {
+    return "Today";
+  }
+}
+
+function getDynamicSuggestions(selectedDocId: number | null, documents: DocumentItem[]): ChatSuggestion[] {
+  const selectedDoc = documents.find((d) => d.id === selectedDocId);
+
+  if (selectedDoc) {
+    const name = selectedDoc.filename.toLowerCase();
+
+    // 1. Resume / CV / Career Profile
+    if (name.includes("resume") || name.includes("cv") || name.includes("profile") || name.includes("bio")) {
+      return [
+        {
+          label: "⚡ ATS & Skill-Gap Audit",
+          query: `Analyze ${selectedDoc.filename} for ATS compatibility. Highlight core technical skills, identify missing keywords, and suggest high-impact bullet improvements.`,
+        },
+        {
+          label: "👤 Executive Profile & Experience",
+          query: `Provide a concise executive overview of the candidate's career trajectory, key roles, and major technical achievements in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "🎯 Targeted Interview Questions",
+          query: `Generate 5 technical interview questions based strictly on the projects, tools, and experience listed in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "💼 Role & Seniority Fit",
+          query: `Based on the demonstrated experience and technologies in ${selectedDoc.filename}, what roles and seniority levels is this candidate best suited for?`,
+        },
+        {
+          label: "💡 Top Strengths & Growth Areas",
+          query: `Summarize the top 3 standout technical strengths and 3 recommended growth areas based on ${selectedDoc.filename}.`,
+        },
+        {
+          label: "📝 Action Verbs & Impact Review",
+          query: `Evaluate the project descriptions in ${selectedDoc.filename}: highlight strong action verbs and suggest quantified metrics where descriptions could be stronger.`,
+        },
+      ];
+    }
+
+    // 2. Syllabus / Coursework / Exam Notes / Lab Manual
+    if (
+      name.includes("syllabus") ||
+      name.includes("notes") ||
+      name.includes("curriculum") ||
+      name.includes("course") ||
+      name.includes("exam") ||
+      name.includes("unit") ||
+      name.includes("lab") ||
+      name.includes("dm") ||
+      name.includes("file")
+    ) {
+      return [
+        {
+          label: "📝 Exam Prep & Viva Mode",
+          query: `Generate 5 challenging exam prep / viva questions with comprehensive answers grounded strictly in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "💡 Core Concepts & Terminology",
+          query: `Explain the fundamental concepts, algorithms, and key terminology introduced in ${selectedDoc.filename} in clear, simple terms.`,
+        },
+        {
+          label: "🔬 Methodologies & Practical Tools",
+          query: `Summarize the practical experiments, tools, and step-by-step methodologies covered in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "📌 High-Yield Revision Sheet",
+          query: `Provide a high-yield study sheet summarizing the most critical rules, formulas, and concepts for quick revision from ${selectedDoc.filename}.`,
+        },
+        {
+          label: "⚠️ Common Pitfalls & Edge Cases",
+          query: `What are the common misunderstandings, pitfalls, or edge cases discussed in ${selectedDoc.filename}?`,
+        },
+        {
+          label: "🔍 Step-by-Step Practice Scenario",
+          query: `Create 2 conceptual practice scenarios or problems based on ${selectedDoc.filename} with complete step-by-step solutions.`,
+        },
+      ];
+    }
+
+    // 3. Research Paper / Technical Report / Study
+    if (
+      name.includes("paper") ||
+      name.includes("report") ||
+      name.includes("research") ||
+      name.includes("thesis") ||
+      name.includes("analysis") ||
+      name.includes("study")
+    ) {
+      return [
+        {
+          label: "📌 Executive Summary & Findings",
+          query: `Summarize the core hypothesis, research methodology, key findings, and final conclusions of ${selectedDoc.filename}.`,
+        },
+        {
+          label: "📊 Empirical Metrics & Results",
+          query: `Extract the principal quantitative metrics, experimental benchmarks, and datasets reported in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "💡 Novel Contributions",
+          query: `What novel techniques or primary contributions does ${selectedDoc.filename} present compared to existing prior work?`,
+        },
+        {
+          label: "⚠️ Limitations & Future Work",
+          query: `What constraints, assumptions, and directions for future research are identified in ${selectedDoc.filename}?`,
+        },
+        {
+          label: "🔍 Methodology Breakdown",
+          query: `Detail the experimental design and procedural workflow utilized in ${selectedDoc.filename}.`,
+        },
+        {
+          label: "🎯 Key Actionable Takeaways",
+          query: `Provide 4 high-impact bullet points outlining the practical takeaways and significance of ${selectedDoc.filename}.`,
+        },
+      ];
+    }
+
+    // 4. Universal Document Prompts (works for any PDF/Doc)
+    return [
+      {
+        label: "📌 Comprehensive Executive Summary",
+        query: `Provide a comprehensive executive summary of ${selectedDoc.filename}, covering its main goals, core topics, and conclusions.`,
+      },
+      {
+        label: "🎯 Key Takeaways & Action Items",
+        query: `What are the primary takeaways, action items, and crucial decisions outlined in ${selectedDoc.filename}?`,
+      },
+      {
+        label: "💡 Critical Concepts & Definitions",
+        query: `Identify and explain the key concepts, frameworks, and definitions essential to understanding ${selectedDoc.filename}.`,
+      },
+      {
+        label: "📝 5 Grounded Practice Questions",
+        query: `Generate 5 insightful review or interview questions strictly grounded in ${selectedDoc.filename} with answers and page references.`,
+      },
+      {
+        label: "⚠️ Risks, Limits & Caveats",
+        query: `What risks, challenges, limitations, or caveats are highlighted in ${selectedDoc.filename}?`,
+      },
+      {
+        label: "🔍 Key Facts & Data Points",
+        query: `Extract the most important statistics, factual highlights, and specific data points presented in ${selectedDoc.filename}.`,
+      },
+    ];
+  }
+
+  // Cross-Document Prompts (When "All documents" is selected)
+  if (documents.length > 1) {
+    return [
+      {
+        label: "🗂️ Cross-Document Synthesis",
+        query: "Synthesize the main themes, findings, and commonalities across all uploaded documents in my workspace.",
+      },
+      {
+        label: "⚖️ Compare & Contrast",
+        query: "Compare and contrast the key methodologies, topics, and conclusions between the different documents in my library.",
+      },
+      {
+        label: "💡 Shared Insights & Connections",
+        query: "What concepts, skills, or arguments are shared between the uploaded files, and where do they differ?",
+      },
+      {
+        label: "📌 Complete Workspace Overview",
+        query: "Give me a high-level executive overview of everything in my library and how each document complements the others.",
+      },
+      {
+        label: "📝 Multi-Doc Knowledge Check",
+        query: "Generate 5 comprehensive questions testing key knowledge from across all documents in this workspace.",
+      },
+      {
+        label: "🎯 Actionable Roadmap",
+        query: "Based on all documents uploaded in my library, what are the primary recommendations and next steps?",
+      },
+    ];
+  }
+
+  // Single document in library without specific selection
+  if (documents.length === 1) {
+    const singleDoc = documents[0];
+    return [
+      {
+        label: "📌 Executive Summary",
+        query: `Summarize the main goals, key findings, and conclusions of ${singleDoc.filename}.`,
+      },
+      {
+        label: "🎯 Key Takeaways",
+        query: `What are the most important actionable takeaways from ${singleDoc.filename}?`,
+      },
+      {
+        label: "💡 Core Concepts & Terms",
+        query: `Explain the fundamental concepts and key definitions in ${singleDoc.filename}.`,
+      },
+      {
+        label: "📝 5 Review Questions",
+        query: `Generate 5 review questions with answers based on ${singleDoc.filename}.`,
+      },
+      {
+        label: "⚠️ Critical Caveats & Limits",
+        query: `What limitations or important caveats are mentioned in ${singleDoc.filename}?`,
+      },
+      {
+        label: "🔍 Highlights & Data Points",
+        query: `What are the standout data points and facts in ${singleDoc.filename}?`,
+      },
+    ];
+  }
+
+  // Empty library prompts
+  return [
+    {
+      label: "💡 What can TokenBrief do?",
+      query: "What types of documents can I upload to TokenBrief, and what features are available?",
+    },
+    {
+      label: "🚀 How does Neural RAG work?",
+      query: "Explain how TokenBrief uses verified citations and full-file digests to prevent AI hallucinations.",
+    },
+  ];
+}
 
 function getDocumentType(filename: string) {
   const extension = filename.split(".").pop()?.trim().toUpperCase();
@@ -335,157 +566,327 @@ export default function DashboardPage() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  return (
-    <div className="page-surface min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="flex min-w-0 items-center gap-2.5 group" aria-label="TokenBrief home">
-            <DinoRangerLogo size={36} className="group-hover:rotate-3" />
-            <div className="min-w-0">
-              <p className="text-base font-extrabold tracking-tight">
-                Token<span className="text-primary">Brief</span>
-              </p>
-              <p className="hidden text-[11px] text-muted-foreground sm:block">AI Document Workspace</p>
-            </div>
-          </Link>
+  const totalPages = documents.reduce((acc, d) => acc + (d.total_page_count || 1), 0);
+  const formattedUser = currentUser ? (currentUser.charAt(0).toUpperCase() + currentUser.slice(1)) : "User";
 
-          <div className="flex items-center gap-2 sm:gap-3">
+  return (
+    <div className="min-h-screen bg-background text-foreground flex flex-col md:flex-row">
+      {/* 1. Left Sidebar Navigation (Desktop - Retentrix Style) */}
+      <aside className="hidden md:flex w-64 fixed inset-y-0 left-0 z-30 flex-col justify-between border-r border-border/70 bg-card/60 backdrop-blur-md">
+        <div>
+          {/* Logo & Brand Header */}
+          <div className="p-4 border-b border-border/70">
+            <Link href="/" className="flex items-center gap-3 group" aria-label="TokenBrief home">
+              <DinoRangerLogo size={36} className="group-hover:rotate-6 transition-transform" />
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base font-extrabold tracking-tight">
+                    Token<span className="text-primary">Brief</span>
+                  </span>
+                </div>
+                <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
+                  AI Workspace
+                </p>
+              </div>
+            </Link>
+          </div>
+
+          {/* Navigation Module Menu */}
+          <div className="px-3 py-4 space-y-1">
+            <p className="px-3 pb-2 text-[10px] font-bold tracking-wider uppercase text-muted-foreground/70">
+              Dashboard Modules
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("workspace")}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                activeTab === "workspace"
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <LayoutDashboard className="h-4 w-4" />
+                <span>Workspace & Chat</span>
+              </div>
+              {documents.length > 0 && (
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                    activeTab === "workspace"
+                      ? "bg-primary-foreground/20 text-primary-foreground"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {documents.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("quiz")}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                activeTab === "quiz"
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Sliders className="h-4 w-4" />
+                <span>Quiz Studio</span>
+              </div>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                  activeTab === "quiz"
+                    ? "bg-primary-foreground/20 text-primary-foreground"
+                    : "bg-primary/10 text-primary"
+                }`}
+              >
+                New
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("compare")}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                activeTab === "compare"
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <ArrowRightLeft className="h-4 w-4" />
+                <span>Compare Docs</span>
+              </div>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                  activeTab === "compare"
+                    ? "bg-primary-foreground/20 text-primary-foreground"
+                    : "bg-primary/10 text-primary"
+                }`}
+              >
+                New
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("graph")}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                activeTab === "graph"
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Network className="h-4 w-4" />
+                <span>Knowledge Graph</span>
+              </div>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                  activeTab === "graph"
+                    ? "bg-primary-foreground/20 text-primary-foreground"
+                    : "bg-primary/10 text-primary"
+                }`}
+              >
+                New
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("analytics")}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                activeTab === "analytics"
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <BarChart3 className="h-4 w-4" />
+                <span>Real Analytics</span>
+              </div>
+              <span className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Live
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Bottom Sidebar Settings & User Profile (Retentrix style) */}
+        <div className="p-3 border-t border-border/70 space-y-1.5">
+          <button
+            type="button"
+            onClick={() => setIsProfileOpen(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground transition-colors"
+          >
+            <Settings className="h-4 w-4" />
+            <span>Settings & Profile</span>
+          </button>
+
+          <div className="flex items-center justify-between rounded-xl bg-muted/40 p-2.5 border border-border/50">
             <button
               type="button"
               onClick={() => setIsProfileOpen(true)}
-              className="flex items-center gap-2 rounded-lg p-1 text-sm transition-colors hover:bg-muted"
-              title="Edit Profile & Account"
+              className="flex items-center gap-2.5 min-w-0 text-left group"
             >
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-xs font-extrabold text-primary">
                 {currentUser.slice(0, 1).toUpperCase()}
               </div>
-              <span className="max-w-28 truncate text-xs font-medium text-muted-foreground hidden sm:inline">{currentUser}</span>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-semibold text-foreground group-hover:text-primary">
+                  {formattedUser}
+                </p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Admin</p>
+              </div>
             </button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExportPdf}
-              disabled={isExportingPdf}
-              className="gap-1.5 text-xs h-8 px-2.5"
-              title="Export workspace session as branded PDF"
-            >
-              <Download className="h-3.5 w-3.5 text-primary" />
-              <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
-            </Button>
-            <Button
-              variant={isSpeaking ? "default" : "outline"}
-              size="sm"
-              onClick={handleToggleAudioBrief}
-              className={`gap-1.5 text-xs h-8 px-2.5 ${isSpeaking ? "bg-amber-600 hover:bg-amber-700 text-white animate-pulse" : ""}`}
-              title={isSpeaking ? "Stop audio briefing" : "Listen to audio brief"}
-            >
-              {isSpeaking ? <VolumeX className="h-3.5 w-3.5" /> : <Headphones className="h-3.5 w-3.5 text-primary" />}
-              <span className="hidden sm:inline">{isSpeaking ? "Stop Brief" : "Audio Brief"}</span>
-            </Button>
-            <Link href="/">
-              <Button variant="ghost" size="sm" className="text-xs h-8 px-2.5 gap-1.5 hidden sm:inline-flex">
-                <Home className="h-3.5 w-3.5" />
-                <span>Home</span>
-              </Button>
-            </Link>
-            <ThemeToggle />
-            <Button
-              variant="outline"
-              size="sm"
+            <button
+              type="button"
               onClick={handleSignOut}
-              className="gap-1.5 text-xs h-8 px-2.5"
+              className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
               title="Sign out"
+              aria-label="Sign out"
             >
-              <LogOut className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Sign out</span>
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* 2. Main Canvas (Offset by sidebar width md:pl-64) */}
+      <div className="flex flex-col flex-1 min-h-screen md:pl-64 bg-background">
+        {/* Retentrix Top Header */}
+        <header className="sticky top-0 z-20 border-b border-border/70 bg-background/85 backdrop-blur-md px-4 sm:px-8 py-3.5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+                  {getGreeting()}, {formattedUser} 👋
+                </h1>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                  Live Document Intelligence
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Real-time document knowledge base & AI synthesis • {getFormattedDate()}
+              </p>
+            </div>
+
+            {/* Top Right Action Buttons */}
+            <div className="flex items-center gap-2 sm:gap-2.5">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className="gap-1.5 text-xs h-8 px-2.5"
+                title="Export workspace session as branded PDF"
+              >
+                <Download className="h-3.5 w-3.5 text-primary" />
+                <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
+              </Button>
+
+              <Button
+                variant={isSpeaking ? "default" : "outline"}
+                size="sm"
+                onClick={handleToggleAudioBrief}
+                className={`gap-1.5 text-xs h-8 px-2.5 ${isSpeaking ? "bg-amber-600 hover:bg-amber-700 text-white animate-pulse" : ""}`}
+                title={isSpeaking ? "Stop audio briefing" : "Listen to audio brief"}
+              >
+                {isSpeaking ? <VolumeX className="h-3.5 w-3.5" /> : <Headphones className="h-3.5 w-3.5 text-primary" />}
+                <span className="hidden sm:inline">{isSpeaking ? "Stop Brief" : "Audio Brief"}</span>
+              </Button>
+
+              <Link href="/">
+                <Button variant="ghost" size="sm" className="text-xs h-8 px-2.5 gap-1.5 hidden lg:inline-flex">
+                  <Home className="h-3.5 w-3.5" />
+                  <span>Home</span>
+                </Button>
+              </Link>
+
+              <ThemeToggle />
+
+              <button
+                type="button"
+                onClick={() => setIsProfileOpen(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-xs font-bold text-primary hover:ring-2 hover:ring-primary/40 transition-all"
+                title="Edit Profile"
+              >
+                {currentUser.slice(0, 1).toUpperCase()}
+              </button>
+            </div>
+          </div>
+
+          {/* Mobile Tab Selector (Visible only on screens < md) */}
+          <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pt-3 border-t border-border/50 mt-3 no-scrollbar">
+            <Button
+              variant={activeTab === "workspace" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveTab("workspace")}
+              className="h-7 text-[11px] px-2.5 shrink-0"
+            >
+              <LayoutDashboard className="h-3 w-3 mr-1" />
+              Workspace
+            </Button>
+            <Button
+              variant={activeTab === "quiz" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveTab("quiz")}
+              className="h-7 text-[11px] px-2.5 shrink-0"
+            >
+              <Sliders className="h-3 w-3 mr-1" />
+              Quiz
+            </Button>
+            <Button
+              variant={activeTab === "compare" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveTab("compare")}
+              className="h-7 text-[11px] px-2.5 shrink-0"
+            >
+              <ArrowRightLeft className="h-3 w-3 mr-1" />
+              Compare
+            </Button>
+            <Button
+              variant={activeTab === "graph" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveTab("graph")}
+              className="h-7 text-[11px] px-2.5 shrink-0"
+            >
+              <Network className="h-3 w-3 mr-1" />
+              Graph
+            </Button>
+            <Button
+              variant={activeTab === "analytics" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveTab("analytics")}
+              className="h-7 text-[11px] px-2.5 shrink-0"
+            >
+              <BarChart3 className="h-3 w-3 mr-1" />
+              Analytics
             </Button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 sm:px-6 sm:py-10">
-        <section className="flex flex-col justify-between gap-5 border-b border-border/80 pb-7 sm:flex-row sm:items-end">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Workspace</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Work with your documents</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-              Add a file, ask a question, and check the source behind each answer.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <FileText className="h-4 w-4 text-primary" />
-            <span>{documents.length} {documents.length === 1 ? "document" : "documents"} in your library</span>
-          </div>
-        </section>
+        {/* Main Content Area */}
+        <main className="flex-1 p-4 sm:p-8 space-y-6 max-w-7xl w-full mx-auto">
+          {activeTab === "workspace" && (
+            <>
+              {/* 4 Retentrix-Style KPI Metrics Cards */}
+              <MetricsCards
+                data={{
+                  totalDocuments: documents.length,
+                  totalPages,
+                  averageLatencyMs: latencyMs,
+                  securityStatus: "Zero-Leak",
+                  activeEngine: "Gemini Pro AI",
+                }}
+              />
 
-        {/* Tab Navigation Controls */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-border/80 pb-3">
-          <Button
-            variant={activeTab === "workspace" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab("workspace")}
-            className="gap-2 text-xs font-semibold"
-          >
-            <Bot className="h-3.5 w-3.5" />
-            <span>Workspace & Chat</span>
-          </Button>
-
-          <Button
-            variant={activeTab === "quiz" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab("quiz")}
-            className="gap-2 text-xs font-semibold"
-          >
-            <Sliders className="h-3.5 w-3.5" />
-            <span>Quiz Studio</span>
-            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
-          </Button>
-
-          <Button
-            variant={activeTab === "compare" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab("compare")}
-            className="gap-2 text-xs font-semibold"
-          >
-            <ArrowRightLeft className="h-3.5 w-3.5" />
-            <span>Compare Docs</span>
-            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
-          </Button>
-
-          <Button
-            variant={activeTab === "graph" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab("graph")}
-            className="gap-2 text-xs font-semibold"
-          >
-            <Network className="h-3.5 w-3.5" />
-            <span>Knowledge Graph</span>
-            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-primary/10 text-primary">New</Badge>
-          </Button>
-
-          <Button
-            variant={activeTab === "analytics" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab("analytics")}
-            className="gap-2 text-xs font-semibold"
-          >
-            <BarChart3 className="h-3.5 w-3.5" />
-            <span>Real Analytics</span>
-            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Live</Badge>
-          </Button>
-        </div>
-
-        {activeTab === "workspace" && (
-          <>
-            <MetricsCards
-              data={{
-                totalDocuments: documents.length,
-                averageLatencyMs: latencyMs,
-                securityStatus: "Active",
-              }}
-            />
-
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_21rem]">
+              <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_21rem]">
           <div className="space-y-6">
             <Card className="flex h-[640px] min-h-[560px] flex-col">
               <CardHeader className="gap-3 border-b border-border/75 pb-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
@@ -546,15 +947,23 @@ export default function DashboardPage() {
                         : "Add a document from the panel on the right, then come back here to ask about it."}
                     </p>
 
-                    <div className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 text-left sm:grid-cols-2">
-                      {CHAT_SUGGESTIONS.map((suggestion) => (
+                    <div className="mt-6 grid w-full max-w-2xl grid-cols-1 gap-2.5 text-left sm:grid-cols-2">
+                      {getDynamicSuggestions(selectedDocId, documents).map((suggestion) => (
                         <button
-                          key={suggestion.query}
+                          key={suggestion.label + suggestion.query}
                           type="button"
                           onClick={() => handleAskQuestion(suggestion.query)}
-                          className="rounded-lg border border-border bg-card px-3 py-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-primary/[0.03]"
+                          className="group relative flex flex-col justify-between rounded-xl border border-border/70 bg-card/60 p-3.5 text-left transition-all duration-150 hover:border-primary/50 hover:bg-primary/[0.04] hover:shadow-sm"
                         >
-                          {suggestion.label}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-foreground group-hover:text-primary">
+                              {suggestion.label}
+                            </span>
+                            <ChevronRight className="h-3 w-3 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                            {suggestion.query}
+                          </p>
                         </button>
                       ))}
                     </div>
@@ -847,6 +1256,7 @@ export default function DashboardPage() {
           />
         )}
       </main>
+      </div>
 
       {expandedSourceChunk && (
         <CitationAnnotationsModal

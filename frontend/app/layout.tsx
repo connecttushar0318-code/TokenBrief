@@ -7,7 +7,8 @@ export const metadata: Metadata = {
   description: "Instant document summaries, smart questions, and verified source citations.",
   icons: {
     icon: [
-      { url: "/icon.svg", type: "image/svg+xml" }
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", type: "image/x-icon" },
     ],
     shortcut: "/icon.svg",
     apple: "/icon.svg",
@@ -38,6 +39,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+        <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+        <link rel="apple-touch-icon" href="/icon.svg" />
         <script
           dangerouslySetInnerHTML={{ __html: themeBlockingScript }}
         />
