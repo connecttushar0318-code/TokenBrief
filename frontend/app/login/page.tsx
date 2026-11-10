@@ -337,7 +337,7 @@ export default function LoginPage() {
                   </label>
                   <Input
                     type="text"
-                    placeholder="rohit or tushar"
+                    placeholder="tushar"
                     value={formData.username}
                     onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                     required
