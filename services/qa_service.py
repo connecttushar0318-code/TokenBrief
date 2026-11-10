@@ -71,7 +71,10 @@ class LLMClient:
                     )
                     if response.text and len(response.text.strip()) > 5:
                         return response.text.strip()
-                except Exception:
+                except Exception as e:
+                    err_msg = str(e)
+                    if "UNAUTHENTICATED" in err_msg or "API key not valid" in err_msg:
+                        break
                     continue
 
         return cls._local_synthesis(prompt)
