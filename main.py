@@ -61,7 +61,12 @@ async def get_system_status():
         "version": "2.0.0",
         "status": "operational",
         "documentation_url": "/docs",
-        "max_upload_size_mb": settings.max_upload_size_mb
+        "max_upload_size_mb": settings.max_upload_size_mb,
+        "email_diagnostics": {
+            "smtp_configured": bool(settings.gmail_app_password),
+            "smtp_sender": settings.gmail_sender_email,
+            "resend_configured": bool(settings.resend_api_key)
+        }
     }
 
 @app.get("/chat", response_class=HTMLResponse)
