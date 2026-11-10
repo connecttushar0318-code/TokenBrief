@@ -53,14 +53,14 @@ app.include_router(entities.router)
 app.include_router(annotations.router)
 
 @app.get("/")
+@app.get("/health")
+@app.get("/healthz")
 async def get_system_status():
     return {
         "service": settings.app_name,
         "version": "2.0.0",
-        "chat_ui": "/chat",
-        "documentation_url": "/docs",
         "status": "operational",
-        "supported_formats": [".pdf", ".txt", ".md"],
+        "documentation_url": "/docs",
         "max_upload_size_mb": settings.max_upload_size_mb
     }
 
