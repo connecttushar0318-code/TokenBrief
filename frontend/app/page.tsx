@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight, Check, FileText, MessageSquare, Search, ShieldCheck } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { DinoRangerLogo } from "@/components/dino-ranger-logo";
 
 const steps = [
   {
@@ -30,9 +31,7 @@ export default function HomePage() {
       <header className="border-b border-border/80 bg-background/75 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-6">
           <Link href="/" className="flex items-center gap-2.5 group" aria-label="TokenBrief home">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-primary via-indigo-500 to-purple-500 text-sm font-black text-white shadow-md shadow-primary/25 transition-transform group-hover:scale-105">
-              <span className="tracking-tighter">TB</span>
-            </div>
+            <DinoRangerLogo size={36} className="group-hover:rotate-3" />
             <span className="text-lg font-extrabold tracking-tight">
               Token<span className="text-primary">Brief</span>
             </span>

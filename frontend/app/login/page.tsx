@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { DinoRangerLogo } from "@/components/dino-ranger-logo";
 import { loginSchema, registrationSchema } from "@/lib/validations";
 import {
   ShieldCheck,
@@ -254,9 +255,7 @@ export default function LoginPage() {
         </Link>
         <div className="h-4 w-px bg-border/80 hidden sm:block" />
         <Link href="/" className="flex items-center gap-2 group" aria-label="TokenBrief home">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-primary via-indigo-500 to-purple-500 text-xs font-black text-white shadow-sm shadow-primary/25 transition-transform group-hover:scale-105">
-            <span className="tracking-tighter">TB</span>
-          </div>
+          <DinoRangerLogo size={32} className="group-hover:rotate-3" />
           <span className="text-base font-extrabold tracking-tight">
             Token<span className="text-primary">Brief</span>
           </span>
@@ -269,8 +268,8 @@ export default function LoginPage() {
 
       <div className="w-full max-w-md space-y-6 pt-16 sm:pt-0">
         <div className="text-center space-y-2">
-          <div className="inline-flex h-12 w-12 rounded-2xl bg-gradient-to-tr from-primary via-indigo-500 to-purple-500 items-center justify-center text-white font-black text-xl shadow-lg shadow-primary/25 mb-1">
-            TB
+          <div className="inline-flex items-center justify-center mb-1">
+            <DinoRangerLogo size={56} animated={true} />
           </div>
           <h1 className="text-2xl font-bold tracking-tight">
             Token<span className="text-primary">Brief</span> Workspace

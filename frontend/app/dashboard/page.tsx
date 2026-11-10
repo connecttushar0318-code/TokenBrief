@@ -39,6 +39,7 @@ import { DocumentComparisonView } from "@/components/document-comparison-view";
 import { KnowledgeGraphVisualizer } from "@/components/knowledge-graph-visualizer";
 import { UserProfileModal } from "@/components/user-profile-modal";
 import { CitationAnnotationsModal } from "@/components/citation-annotations-modal";
+import { DinoRangerLogo } from "@/components/dino-ranger-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -339,9 +340,7 @@ export default function DashboardPage() {
       <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <Link href="/" className="flex min-w-0 items-center gap-2.5 group" aria-label="TokenBrief home">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-primary via-indigo-500 to-purple-500 text-xs font-black text-white shadow-sm shadow-primary/25 transition-transform group-hover:scale-105">
-              <span className="tracking-tighter">TB</span>
-            </div>
+            <DinoRangerLogo size={36} className="group-hover:rotate-3" />
             <div className="min-w-0">
               <p className="text-base font-extrabold tracking-tight">
                 Token<span className="text-primary">Brief</span>

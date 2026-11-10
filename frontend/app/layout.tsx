@@ -5,6 +5,13 @@ import { ThemeProvider } from "@/components/theme-provider";
 export const metadata: Metadata = {
   title: "TokenBrief — Document Intelligence & AI Workspace",
   description: "Instant document summaries, smart questions, and verified source citations.",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" }
+    ],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 const themeBlockingScript = `
