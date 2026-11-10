@@ -1,0 +1,12 @@
+# Ignore backend Python files and heavy ML dependencies from Vercel
+*.py
+requirements.txt
+requirements*.txt
+services/
+routers/
+alembic/
+venv/
+.venv/
+tests/
+uploads/
+*.pdf
