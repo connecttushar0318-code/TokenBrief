@@ -101,7 +101,19 @@ export default function LoginPage() {
           throw new Error(errorMsg);
         }
 
-        router.push("/dashboard");
+        if (data.access_token) {
+          const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
+          document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
+          localStorage.setItem("access_token", data.access_token);
+          if (data.username) {
+            localStorage.setItem("tokenbrief_user", JSON.stringify({
+              username: data.username,
+              email: data.email,
+            }));
+          }
+        }
+
+        window.location.href = "/dashboard";
       } else if (mode === "register") {
         const validation = registrationSchema.safeParse({
           username: formData.username,
@@ -161,7 +173,19 @@ export default function LoginPage() {
           throw new Error(data.detail || "Invalid or expired OTP");
         }
 
-        router.push("/dashboard");
+        if (data.access_token) {
+          const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
+          document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
+          localStorage.setItem("access_token", data.access_token);
+          if (data.username) {
+            localStorage.setItem("tokenbrief_user", JSON.stringify({
+              username: data.username,
+              email: data.email,
+            }));
+          }
+        }
+
+        window.location.href = "/dashboard";
       } else if (mode === "forgot_password") {
         if (!formData.email.trim()) {
           throw new Error("Please enter your registered email address");

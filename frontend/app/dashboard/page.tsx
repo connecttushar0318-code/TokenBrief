@@ -90,6 +90,17 @@ interface ChatSuggestion {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+const getAuthHeaders = (extraHeaders: Record<string, string> = {}): Record<string, string> => {
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("access_token");
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
+  return headers;
+};
+
 function getGreeting() {
   const hour = new Date().getHours();
   if (hour < 12) return "Good morning";
@@ -362,7 +373,7 @@ export default function DashboardPage() {
       }));
       const res = await fetch(`${API_BASE_URL}/api/export/pdf`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({
           session_title: "TokenBrief Intelligence Report",
@@ -427,18 +438,28 @@ export default function DashboardPage() {
 
   const fetchCurrentUser = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/me`, { credentials: "include" });
+      const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
       if (response.ok) {
         const data = await response.json();
         setCurrentUser(data.username || "tushar");
         setUserData(data);
+      } else if (response.status === 401) {
+        document.cookie = "access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+        localStorage.removeItem("access_token");
+        window.location.href = "/login";
       }
     } catch {}
   };
 
   const fetchDocuments = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/documents`, { credentials: "include" });
+      const response = await fetch(`${API_BASE_URL}/api/documents`, {
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
       if (response.ok) {
         setDocuments(await response.json());
       }
@@ -446,6 +467,13 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    try {
+      const savedUser = localStorage.getItem("tokenbrief_user");
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed.username) setCurrentUser(parsed.username);
+      }
+    } catch {}
     fetchCurrentUser();
     fetchDocuments();
   }, []);
@@ -469,7 +497,7 @@ export default function DashboardPage() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/qa/quick-chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({
           message_text: questionToAsk.trim(),
@@ -521,6 +549,7 @@ export default function DashboardPage() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/documents/${docId}/summary`, {
         method: "POST",
+        headers: getAuthHeaders(),
         credentials: "include",
       });
       if (!response.ok) throw new Error("Summary generation failed");
@@ -538,6 +567,7 @@ export default function DashboardPage() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/documents/${docId}`, {
         method: "DELETE",
+        headers: getAuthHeaders(),
         credentials: "include",
       });
       if (response.ok) {
@@ -554,10 +584,14 @@ export default function DashboardPage() {
     try {
       await fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: "POST",
+        headers: getAuthHeaders(),
         credentials: "include",
       });
     } catch {}
-    router.push("/login");
+    document.cookie = "access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("tokenbrief_user");
+    window.location.href = "/login";
   };
 
   const handleCopyAnswer = (text: string, id: string) => {

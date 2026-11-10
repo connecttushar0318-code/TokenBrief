@@ -51,8 +51,14 @@ export function DocumentUploadCard({ onUploadSuccess }: { onUploadSuccess?: () =
         formData.append("uploaded_file", file);
 
         try {
+          const headers: Record<string, string> = {};
+          if (typeof window !== "undefined") {
+            const token = localStorage.getItem("access_token");
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+          }
           const response = await fetch(`${API_BASE_URL}/api/documents/upload`, {
             method: "POST",
+            headers,
             body: formData,
             credentials: "include",
           });
