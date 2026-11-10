@@ -1,3 +1,4 @@
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
@@ -28,6 +29,19 @@ from security import (
 from services.email_service import EmailNotificationService
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+def _get_cookie_security_params():
+    is_prod = bool(
+        os.environ.get("RENDER")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("ENVIRONMENT") == "production"
+    )
+    return {
+        "httponly": True,
+        "samesite": "none" if is_prod else "lax",
+        "secure": is_prod,
+        "path": "/"
+    }
 
 def generate_secure_otp() -> str:
     return str(secrets.randbelow(900000) + 100000)
@@ -150,11 +164,8 @@ async def verify_email_address(
     response.set_cookie(
         key="access_token",
         value=access_token_string,
-        httponly=True,
-        samesite="lax",
-        secure=False,
         max_age=settings.access_token_expire_minutes * 60,
-        path="/"
+        **_get_cookie_security_params()
     )
 
     return {
@@ -257,11 +268,8 @@ async def login_and_generate_token(
     response.set_cookie(
         key="access_token",
         value=access_token_string,
-        httponly=True,
-        samesite="lax",
-        secure=False,
         max_age=settings.access_token_expire_minutes * 60,
-        path="/"
+        **_get_cookie_security_params()
     )
 
     return {
@@ -299,11 +307,8 @@ async def refresh_access_token(
     response.set_cookie(
         key="access_token",
         value=new_access_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
         max_age=settings.access_token_expire_minutes * 60,
-        path="/"
+        **_get_cookie_security_params()
     )
 
     return {
@@ -314,7 +319,13 @@ async def refresh_access_token(
 
 @router.post("/logout", response_model=GenericMessageResponse)
 async def logout_user_session(response: Response):
-    response.delete_cookie(key="access_token", path="/")
+    cookie_params = _get_cookie_security_params()
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        samesite=cookie_params["samesite"],
+        secure=cookie_params["secure"]
+    )
     return GenericMessageResponse(message="Successfully logged out")
 
 @router.post("/forgot-password", response_model=GenericMessageResponse)
