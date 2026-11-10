@@ -7,6 +7,18 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=for-the-badge&logo=tailwind-css)](https://tailwindcss.com/)
 
+---
+
+## 🌐 Live Deployments
+
+| Component | Platform | Status | Live Link |
+|---|---|---|---|
+| **Frontend Web App** | **Vercel** | ![Production Ready](https://img.shields.io/badge/Vercel-Live-brightgreen?style=flat-square&logo=vercel) | [https://token-brief.vercel.app](https://token-brief.vercel.app) |
+| **Backend API Server** | **Render / Koyeb / Docker** | ![API Active](https://img.shields.io/badge/FastAPI-Online-teal?style=flat-square&logo=fastapi) | [https://tokenbrief-backend.onrender.com](https://tokenbrief-backend.onrender.com) &bull; [Swagger Docs](https://tokenbrief-backend.onrender.com/docs) |
+| **Neon PostgreSQL + pgvector** | **AWS us-east-2** | ![Database Connected](https://img.shields.io/badge/Neon-Connected-blue?style=flat-square&logo=postgresql) | Managed Cloud Database Cluster |
+
+---
+
 **TokenBrief** is an enterprise-grade Document Intelligence and Retrieval-Augmented Generation (RAG) platform. It transforms static PDFs, technical lecture notes, resumes, and enterprise manuals into structured knowledge through conversational Q&A, interactive quiz generation, multi-document comparison, entity knowledge graph visualization, real-time analytics, and automated PDF export.
 
 ---
@@ -185,6 +197,33 @@ npm run dev
 ```
 
 Open `http://localhost:3000` in your browser.
+
+---
+
+## 🚀 Cloud Deployment Guide
+
+### Deploying Frontend to Vercel
+1. Import repository `connecttushar0318-code/TokenBrief` into [Vercel](https://vercel.com).
+2. In **Build & Development Settings**:
+   - **Root Directory**: `frontend`
+   - **Framework Preset**: `Next.js`
+   - **Output Directory**: Default (`.next` &mdash; toggle override off)
+3. Under **Environment Variables**, add:
+   - `NEXT_PUBLIC_API_URL`: Your deployed backend URL (e.g. `https://tokenbrief-backend.onrender.com`).
+
+### Deploying Backend to Render / Koyeb (Docker / Python)
+1. Go to [Render Dashboard](https://dashboard.render.com/) &rarr; **New Web Service** &rarr; Connect GitHub repository.
+2. Select **Runtime: Python 3** (or **Docker** using the included `Dockerfile`).
+   - **Build Command**: `pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. Add the following **Environment Variables**:
+   - `DATABASE_URL`: `postgresql+asyncpg://neondb_owner:...@ep-restless-moon-...neon.tech/neondb?sslmode=require`
+   - `SECRET_KEY`: `b71c265324df...`
+   - `GEMINI_API_KEY`: Your Google AI Studio API Key
+   - `GEMINI_MODEL`: `gemini-2.5-flash`
+   - `EMBEDDING_MODEL_NAME`: `all-MiniLM-L6-v2`
+   - `GMAIL_SENDER_EMAIL`: `connect.tushar0318@gmail.com`
+   - `GMAIL_APP_PASSWORD`: `qgms sczr hxnh bhuq`
 
 ---
 
