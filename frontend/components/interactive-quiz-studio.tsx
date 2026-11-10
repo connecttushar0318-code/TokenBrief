@@ -88,6 +88,7 @@ export function InteractiveQuizStudio({
     setErrorMessage(null);
     setQuizResult(null);
     setSelectedAnswers({});
+    setQuestions([]);
     setIsReviewMode(reviewMode);
 
     try {
@@ -132,12 +133,19 @@ export function InteractiveQuizStudio({
 
   const handleSubmitQuiz = async () => {
     if (!selectedDocId || questions.length === 0) return;
+
+    const unansweredCount = questions.filter((q) => !selectedAnswers[q.id]).length;
+    if (unansweredCount > 0) {
+      setErrorMessage(`Please answer all ${questions.length} questions before submitting (${answeredCount}/${questions.length} answered).`);
+      return;
+    }
+
     setIsSubmitting(true);
     setErrorMessage(null);
 
     const formattedAnswers = questions.map((q) => ({
       question_id: q.id,
-      selected_option: selectedAnswers[q.id] || "A",
+      selected_option: selectedAnswers[q.id],
     }));
 
     try {
@@ -195,7 +203,9 @@ export function InteractiveQuizStudio({
                 onChange={(e) => {
                   setSelectedDocId(Number(e.target.value));
                   setQuestions([]);
+                  setSelectedAnswers({});
                   setQuizResult(null);
+                  setErrorMessage(null);
                 }}
                 className="w-full text-xs rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
               >
@@ -295,13 +305,27 @@ export function InteractiveQuizStudio({
                   </CardDescription>
                 </div>
               </div>
-              <div className="text-right">
-                <span className="text-3xl font-black text-primary">
-                  {quizResult.score_percentage}%
-                </span>
-                <p className="text-[11px] text-muted-foreground">
-                  {quizResult.score_percentage >= 70 ? "Mastery Demonstrated 🎉" : "Needs Review 📚"}
-                </p>
+              <div className="flex flex-col items-end gap-2">
+                <div className="text-right">
+                  <span className="text-3xl font-black text-primary">
+                    {quizResult.score_percentage}%
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    {quizResult.score_percentage >= 70 ? "Mastery Demonstrated 🎉" : "Needs Review 📚"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setQuizResult(null);
+                    setSelectedAnswers({});
+                  }}
+                  className="h-7 text-xs gap-1.5"
+                >
+                  <RotateCcw className="h-3 w-3 text-primary" />
+                  <span>Retake / New Test</span>
+                </Button>
               </div>
             </div>
           </CardHeader>
@@ -422,14 +446,27 @@ export function InteractiveQuizStudio({
             })}
           </div>
 
-          <div className="flex justify-end pt-2">
+          <div className="flex items-center justify-between pt-2">
+            <span className="text-xs text-muted-foreground">
+              {answeredCount === questions.length ? (
+                <span className="text-emerald-500 font-medium">All {questions.length} questions answered!</span>
+              ) : (
+                <span>{questions.length - answeredCount} question(s) remaining</span>
+              )}
+            </span>
             <Button
               onClick={handleSubmitQuiz}
-              disabled={isSubmitting}
+              disabled={isSubmitting || answeredCount < questions.length}
               className="gap-2 text-xs h-9 px-5"
             >
               <CheckCircle2 className="h-4 w-4" />
-              <span>{isSubmitting ? "Grading Responses..." : "Submit & Grade Quiz"}</span>
+              <span>
+                {isSubmitting
+                  ? "Grading Responses..."
+                  : answeredCount < questions.length
+                  ? `Answer All (${answeredCount}/${questions.length})`
+                  : "Submit & Grade Quiz"}
+              </span>
             </Button>
           </div>
         </div>

@@ -4,7 +4,7 @@ import random
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, delete
 from models import (
     QuizQuestionRecord,
     QuizAttemptRecord,
@@ -13,6 +13,307 @@ from models import (
     DocumentChunkRecord
 )
 from config import settings
+from services.qa_service import LLMClient
+
+
+def clean_chunk_text(raw_text: str) -> str:
+    """Removes leaked internal tags like '[Doc: ... | Section: ... | Page: 1].'"""
+    text = re.sub(r"^\[Doc:.*?\]\.?\s*", "", raw_text, flags=re.DOTALL)
+    text = re.sub(r"^Page\s+\d+\s*", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def sample_chunks_across_document(all_chunks: List[Dict], num_samples: int = 8) -> List[Dict]:
+    """
+    Picks chunks evenly spread across all pages of the PDF (1 to 50+ pages)
+    so the quiz covers the whole document rather than just Page 1.
+    """
+    if not all_chunks:
+        return []
+    if len(all_chunks) <= num_samples:
+        return all_chunks
+
+    step = len(all_chunks) / num_samples
+    return [all_chunks[int(i * step)] for i in range(num_samples)]
+
+
+def generate_local_conceptual_quiz(
+    doc_name: str,
+    all_doc_chunks: List[Dict[str, Any]],
+    num_questions: int = 5,
+    difficulty: str = "medium"
+) -> List[Dict[str, Any]]:
+    """
+    Generates genuine, high-quality domain-specific MCQs directly from document text
+    when external LLM is offline or unconfigured. Never uses hardcoded mainframe strings.
+    """
+    sampled_chunks = sample_chunks_across_document(all_doc_chunks, num_samples=max(12, num_questions * 2))
+
+    fact_candidates = []
+    all_terms = []
+
+    def_regex = re.compile(
+        r"([A-Z][a-zA-Z0-9\s\-]{2,40})\s+(?:is defined as|refers to|is the process of|consists of|deals with|means|is characterized by)\s+([^\.\n]+)\.",
+        re.IGNORECASE
+    )
+    unit_regex = re.compile(
+        r"((?:Unit|Chapter|Section|Practical|Experiment|Module|Marks|Topic)\s+[^\.\n:]{3,50}[:\-]?\s+[^\.\n]+)\.",
+        re.IGNORECASE
+    )
+    bullet_regex = re.compile(r"(?:•|\*|-|\d+\.)\s+([A-Z][^\.\n]{20,120}\.)")
+
+    for chk in sampled_chunks:
+        page_num = chk.get("page", 1)
+        text = clean_chunk_text(chk.get("text", ""))
+        if len(text) < 40:
+            continue
+
+        for match in def_regex.finditer(text):
+            term = match.group(1).strip()
+            definition = match.group(2).strip()
+            if len(term) > 3 and len(definition) > 15:
+                fact_candidates.append({
+                    "type": "definition",
+                    "term": term,
+                    "answer": definition[:110],
+                    "page": page_num,
+                })
+                all_terms.append(term)
+
+        for match in unit_regex.finditer(text):
+            sentence = match.group(1).strip()
+            if len(sentence) > 25:
+                fact_candidates.append({
+                    "type": "topic",
+                    "sentence": sentence[:120],
+                    "page": page_num,
+                })
+
+        for match in bullet_regex.finditer(text):
+            statement = match.group(1).strip()
+            if len(statement) > 30 and not statement.startswith("Page"):
+                fact_candidates.append({
+                    "type": "statement",
+                    "sentence": statement[:120],
+                    "page": page_num,
+                })
+
+    distractor_pool = list(set(
+        all_terms +
+        [c.get("answer", "") for c in fact_candidates if c.get("answer")] +
+        [c.get("sentence", "") for c in fact_candidates if c.get("sentence")]
+    ))
+
+    raw_questions = []
+
+    for item in fact_candidates:
+        if len(raw_questions) >= num_questions:
+            break
+
+        page_num = item["page"]
+
+        if item["type"] == "definition":
+            question_text = f"According to '{doc_name}', what is {item['term']}?"
+            correct_ans = item["answer"]
+            other_options = [d for d in distractor_pool if d != correct_ans and len(d) > 10 and d != item["term"]]
+            if len(other_options) < 3:
+                other_options.extend([
+                    f"A secondary procedural step detailed in subsequent chapters",
+                    f"A diagnostic metric reserved for non-standard evaluations",
+                    f"A supplementary reference guideline not covered in this unit"
+                ])
+            wrong_answers = random.sample(other_options, 3)
+            explanation = f"Page {page_num} states that {item['term']} is: '{correct_ans}'."
+
+        elif item["type"] == "topic":
+            question_text = f"Which curriculum or domain specification is outlined on Page {page_num}?"
+            correct_ans = item["sentence"]
+            other_options = [d for d in distractor_pool if d != correct_ans and len(d) > 15]
+            if len(other_options) < 3:
+                other_options.extend([
+                    "An optional supplementary seminar requirement",
+                    "A non-examinable reference curriculum framework",
+                    "A preparatory module scheduled for subsequent terms"
+                ])
+            wrong_answers = random.sample(other_options, 3)
+            explanation = f"Page {page_num} explicitly specifies: '{correct_ans}'."
+
+        else:
+            question_text = f"Which key guideline or finding is confirmed on Page {page_num} of {doc_name}?"
+            correct_ans = item["sentence"]
+            other_options = [d for d in distractor_pool if d != correct_ans and len(d) > 15]
+            if len(other_options) < 3:
+                other_options.extend([
+                    "The complete exclusion of practical laboratory testing",
+                    "A discretionary exception permitted only under external audit",
+                    "A historical convention prior to current standardisation"
+                ])
+            wrong_answers = random.sample(other_options, 3)
+            explanation = f"Document context on Page {page_num} confirms: '{correct_ans}'."
+
+        raw_questions.append({
+            "question": question_text,
+            "correct_answer": correct_ans,
+            "wrong_answers": wrong_answers,
+            "page": page_num,
+            "explanation": explanation
+        })
+
+    while len(raw_questions) < num_questions and sampled_chunks:
+        chk = random.choice(sampled_chunks)
+        page_num = chk.get("page", 1)
+        cleaned = clean_chunk_text(chk.get("text", ""))
+        sentences = [s.strip() for s in cleaned.split(".") if len(s.strip()) > 35]
+        if sentences:
+            chosen = sentences[0] + "."
+            distractors = [
+                f"An unverified theoretical assumption omitted from the core text of {doc_name}",
+                f"A discontinued prerequisite from previous curriculum iterations",
+                f"An external third-party protocol not referenced in this document"
+            ]
+            raw_questions.append({
+                "question": f"Which principle is directly established on Page {page_num} of {doc_name}?",
+                "correct_answer": chosen,
+                "wrong_answers": distractors,
+                "page": page_num,
+                "explanation": f"Page {page_num} confirms the principle: '{chosen}'."
+            })
+        else:
+            break
+
+    formatted_quiz = []
+    option_labels = ["A", "B", "C", "D"]
+
+    for idx, q in enumerate(raw_questions[:num_questions], start=1):
+        correct_text = q["correct_answer"].strip()
+        distractors = [w.strip() for w in q["wrong_answers"][:3]]
+        all_options = [correct_text] + distractors
+        random.shuffle(all_options)
+
+        correct_index = all_options.index(correct_text)
+        correct_letter = option_labels[correct_index]
+
+        formatted_quiz.append({
+            "id": idx,
+            "question": q["question"].strip(),
+            "page": int(q.get("page", 1)),
+            "options": {
+                "A": all_options[0],
+                "B": all_options[1],
+                "C": all_options[2],
+                "D": all_options[3],
+            },
+            "correct_option": correct_letter,
+            "correct_index": correct_index,
+            "explanation": q.get("explanation", "")
+        })
+
+    return formatted_quiz
+
+
+async def generate_quiz_questions_llm(
+    doc_name: str,
+    all_doc_chunks: List[Dict[str, Any]],
+    num_questions: int = 5,
+    difficulty: str = "medium",
+    llm_client = None
+) -> List[Dict[str, Any]]:
+    """
+    Generates real conceptual MCQs with plausible same-topic distractors,
+    shuffled option positions (A/B/C/D), explanations, and exact page citations.
+    """
+    sampled_chunks = sample_chunks_across_document(all_doc_chunks, num_samples=max(8, num_questions * 2))
+
+    context_blocks = []
+    for c in sampled_chunks:
+        page_num = c.get("page", 1)
+        cleaned = clean_chunk_text(c.get("text", ""))
+        if len(cleaned) > 50:
+            context_blocks.append(f"[Page {page_num}]: {cleaned}")
+
+    document_context = "\n\n".join(context_blocks)
+
+    if not llm_client:
+        llm_client = LLMClient
+
+    prompt = f"""You are an expert examiner creating an interactive quiz for the document "{doc_name}".
+Based ONLY on the document excerpts below, generate {num_questions} distinct Multiple-Choice Questions (MCQs) at {difficulty} difficulty.
+
+STRICT QUALITY RULES:
+1. Write specific, meaningful questions that test real concepts, definitions, chapters, practicals, rules, or metrics from the text.
+2. NEVER ask generic questions like "Which statement is directly supported by the document analysis?".
+3. Provide 1 correct answer and 3 plausible wrong answers (distractors) that belong to the SAME subject area and tone as the document.
+4. Keep all 4 options similar in length and grammatical style. Do NOT copy-paste broken sentence fragments.
+5. Include a 1-sentence "explanation" stating why the correct answer is right according to that page.
+
+Document Excerpts:
+{document_context}
+
+Return ONLY a valid JSON array of {num_questions} objects in this exact schema (no markdown text outside the JSON):
+[
+  {{
+    "question": "Specific question testing a concept from the document?",
+    "correct_answer": "The exact correct option text",
+    "wrong_answers": [
+      "Plausible wrong option 1 from the same subject",
+      "Plausible wrong option 2 from the same subject",
+      "Plausible wrong option 3 from the same subject"
+    ],
+    "page": 1,
+    "explanation": "Brief explanation citing the fact from the page."
+  }}
+]"""
+
+    try:
+        raw_response = await llm_client.generate_text(prompt, temperature=0.3)
+        match = re.search(r"\[.*\]", raw_response, flags=re.DOTALL)
+        if match:
+            raw_questions = json.loads(match.group(0))
+            if isinstance(raw_questions, list) and len(raw_questions) > 0:
+                formatted_quiz = []
+                option_labels = ["A", "B", "C", "D"]
+
+                for idx, q in enumerate(raw_questions[:num_questions], start=1):
+                    correct_text = str(q.get("correct_answer", "")).strip()
+                    wrong_answers = q.get("wrong_answers", [])
+                    distractors = [str(w).strip() for w in wrong_answers[:3]]
+
+                    while len(distractors) < 3:
+                        distractors.append(f"Alternative theoretical scenario {len(distractors) + 1}")
+
+                    all_options = [correct_text] + distractors
+                    random.shuffle(all_options)
+
+                    correct_index = all_options.index(correct_text)
+                    correct_letter = option_labels[correct_index]
+
+                    formatted_quiz.append({
+                        "id": idx,
+                        "question": str(q.get("question", "")).strip(),
+                        "page": int(q.get("page", 1)),
+                        "options": {
+                            "A": all_options[0],
+                            "B": all_options[1],
+                            "C": all_options[2],
+                            "D": all_options[3],
+                        },
+                        "correct_option": correct_letter,
+                        "correct_index": correct_index,
+                        "explanation": str(q.get("explanation", ""))
+                    })
+
+                if len(formatted_quiz) >= num_questions:
+                    return formatted_quiz
+    except Exception:
+        pass
+
+    return generate_local_conceptual_quiz(
+        doc_name=doc_name,
+        all_doc_chunks=all_doc_chunks,
+        num_questions=num_questions,
+        difficulty=difficulty
+    )
+
 
 class QuizEngineService:
 
@@ -42,35 +343,41 @@ class QuizEngineService:
         if not retrieved_chunks:
             raise ValueError(f"Document with ID {document_id} has no indexed text chunks.")
 
-        raw_questions_data = None
-        if settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy"):
-            raw_questions_data = await cls._try_gemini_quiz_generation(
-                target_document=target_document,
-                chunks=retrieved_chunks,
-                number_of_questions=number_of_questions,
-                difficulty=difficulty
-            )
+        # Purge old questions for this document to ensure fresh generation
+        await database_session.execute(
+            delete(QuizQuestionRecord).where(QuizQuestionRecord.document_id == document_id)
+        )
+        await database_session.flush()
 
-        if not raw_questions_data:
-            raw_questions_data = cls._generate_fallback_quiz_questions(
-                target_document=target_document,
-                chunks=retrieved_chunks,
-                number_of_questions=number_of_questions,
-                difficulty=difficulty
-            )
+        all_doc_chunks = [
+            {
+                "page": chunk.source_page_number or 1,
+                "text": chunk.chunk_text_content,
+                "id": chunk.id
+            }
+            for chunk in retrieved_chunks
+        ]
+
+        raw_questions_data = await generate_quiz_questions_llm(
+            doc_name=target_document.filename,
+            all_doc_chunks=all_doc_chunks,
+            num_questions=number_of_questions,
+            difficulty=difficulty,
+            llm_client=LLMClient
+        )
 
         created_question_records = []
         for question_dict in raw_questions_data:
             new_question_record = QuizQuestionRecord(
                 document_id=document_id,
-                question_text=question_dict["question_text"],
-                option_a=question_dict["option_a"],
-                option_b=question_dict["option_b"],
-                option_c=question_dict["option_c"],
-                option_d=question_dict["option_d"],
+                question_text=question_dict["question"],
+                option_a=question_dict["options"]["A"],
+                option_b=question_dict["options"]["B"],
+                option_c=question_dict["options"]["C"],
+                option_d=question_dict["options"]["D"],
                 correct_option=question_dict["correct_option"].upper(),
                 explanation=question_dict.get("explanation"),
-                source_page_number=question_dict.get("source_page_number", 1),
+                source_page_number=int(question_dict.get("page", 1)),
                 difficulty=difficulty
             )
             database_session.add(new_question_record)
@@ -81,235 +388,6 @@ class QuizEngineService:
             await database_session.refresh(record)
 
         return created_question_records
-
-    @classmethod
-    async def _try_gemini_quiz_generation(
-        cls,
-        target_document: DocumentRecord,
-        chunks: List[DocumentChunkRecord],
-        number_of_questions: int,
-        difficulty: str
-    ) -> Optional[List[Dict[str, Any]]]:
-        try:
-            from google import genai
-            from google.genai import types
-
-            sampled_chunks = chunks[:15]
-            aggregated_context = "\n\n".join(
-                [f"[Page {chunk.source_page_number}] {chunk.chunk_text_content}" for chunk in sampled_chunks]
-            )
-
-            client = genai.Client(api_key=settings.gemini_api_key)
-            prompt = (
-                f"You are a test preparation expert. Generate {number_of_questions} multiple-choice questions "
-                f"at {difficulty} difficulty based strictly on this document titled '{target_document.filename}'.\n"
-                f"Context:\n{aggregated_context[:14000]}\n\n"
-                f"Output strictly valid JSON as an array of objects with keys: "
-                f"'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_option' (must be 'A', 'B', 'C', or 'D'), "
-                f"'explanation', 'source_page_number' (integer).\n"
-                f"Do not include markdown code fence formatting."
-            )
-
-            response = client.models.generate_content(
-                model=settings.gemini_model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    response_mime_type="application/json"
-                )
-            )
-
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-
-            parsed = json.loads(raw_text.strip())
-            if isinstance(parsed, list) and len(parsed) > 0:
-                return parsed[:number_of_questions]
-            if isinstance(parsed, dict) and "questions" in parsed:
-                return parsed["questions"][:number_of_questions]
-        except Exception:
-            return None
-        return None
-
-    @classmethod
-    def _generate_fallback_quiz_questions(
-        cls,
-        target_document: DocumentRecord,
-        chunks: List[DocumentChunkRecord],
-        number_of_questions: int,
-        difficulty: str
-    ) -> List[Dict[str, Any]]:
-        is_resume = "resume" in target_document.filename.lower() or "cv" in target_document.filename.lower()
-        aggregated_text = "\n".join([chunk.chunk_text_content for chunk in chunks])
-        cleaned_text = re.sub(r"\[Document:.*?\]", "", aggregated_text)
-
-        candidate_questions = []
-
-        if is_resume:
-            candidate_questions.extend(cls._extract_resume_quiz_items(cleaned_text, chunks))
-        else:
-            candidate_questions.extend(cls._extract_document_concept_quiz_items(cleaned_text, chunks))
-
-        if len(candidate_questions) < number_of_questions:
-            candidate_questions.extend(cls._extract_general_fact_quiz_items(cleaned_text, chunks))
-
-        while len(candidate_questions) < number_of_questions:
-            page_num = chunks[0].source_page_number or 1
-            candidate_questions.append({
-                "question_text": f"What is the principal subject covered in '{target_document.filename}'?",
-                "option_a": f"The core domain methodologies and detailed content of {target_document.filename.replace('.pdf', '')}",
-                "option_b": "General accounting and tax guidelines",
-                "option_c": "Unrelated peripheral hardware specifications",
-                "option_d": "Fictional storytelling and scriptwriting",
-                "correct_option": "A",
-                "explanation": f"The primary subject matter focuses directly on the domain information documented within {target_document.filename}.",
-                "source_page_number": page_num
-            })
-
-        return candidate_questions[:number_of_questions]
-
-    @classmethod
-    def _extract_resume_quiz_items(cls, text: str, chunks: List[DocumentChunkRecord]) -> List[Dict[str, Any]]:
-        questions = []
-        page_num = chunks[0].source_page_number or 1
-
-        name_match = re.search(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})", text.strip())
-        if name_match:
-            person_name = name_match.group(1).strip()
-            questions.append({
-                "question_text": f"Who is the candidate profiled in this document?",
-                "option_a": person_name,
-                "option_b": "Dr. Sarah Jenkins",
-                "option_c": "Michael R. Thompson",
-                "option_d": "Alex Morgan",
-                "correct_option": "A",
-                "explanation": f"The header of the resume identifies {person_name} as the candidate.",
-                "source_page_number": page_num
-            })
-
-        skills_match = re.search(r"(?:Technical Skills|Skills|Technologies|Competencies)[:\s]+([^\n\r]+)", text, re.IGNORECASE)
-        if skills_match:
-            skills_string = skills_match.group(1)
-            skill_items = [s.strip() for s in re.split(r"[,|•\-\n]", skills_string) if len(s.strip()) > 2]
-            if len(skill_items) >= 2:
-                correct_skill = skill_items[0]
-                questions.append({
-                    "question_text": f"Which technical skill or technology is explicitly listed in the candidate's profile?",
-                    "option_a": "Objective-C & COBOL Legacy Systems",
-                    "option_b": correct_skill,
-                    "option_c": "Assembly x86 Microcode",
-                    "option_d": "Fortran 77 Numerical Analysis",
-                    "correct_option": "B",
-                    "explanation": f"The candidate's technical skills section directly lists '{correct_skill}'.",
-                    "source_page_number": page_num
-                })
-
-        education_match = re.search(r"(?:B\.?Tech|Bachelor|Master|Degree|B\.?E\.?|B\.?S\.?|University|College|Institute)[^\n\r]+", text, re.IGNORECASE)
-        if education_match:
-            edu_text = education_match.group(0).strip()[:80]
-            questions.append({
-                "question_text": "Which educational background or institution is documented in the profile?",
-                "option_a": "Harvard Medical School Postdoctoral Fellowship",
-                "option_b": "London School of Economics Maritime Law",
-                "option_c": edu_text,
-                "option_d": "Tokyo University Architecture Department",
-                "correct_option": "C",
-                "explanation": f"The education section indicates: '{edu_text}'.",
-                "source_page_number": page_num
-            })
-
-        projects_match = re.findall(r"(?:Project|Title|Work)[:\s]+([^\n\r]+)", text, re.IGNORECASE)
-        if projects_match:
-            project_name = projects_match[0].strip()[:70]
-            questions.append({
-                "question_text": "What project or initiative did the candidate develop or contribute to?",
-                "option_a": project_name,
-                "option_b": "Submarine Sonar Waveform Calibrator",
-                "option_c": "High-Frequency Automated Wall Street Trader",
-                "option_d": "Aerospace Combustion Modeling Framework",
-                "correct_option": "A",
-                "explanation": f"The candidate's portfolio includes the project '{project_name}'.",
-                "source_page_number": page_num
-            })
-
-        return questions
-
-    @classmethod
-    def _extract_document_concept_quiz_items(cls, text: str, chunks: List[DocumentChunkRecord]) -> List[Dict[str, Any]]:
-        questions = []
-        definition_pattern = re.compile(
-            r"([A-Z][a-zA-Z0-9\s\-]{2,35})\s+(?:is defined as|refers to|is the process of|consists of|is a technique for)\s+([^\.\n]+)\.",
-            re.IGNORECASE
-        )
-
-        matches = definition_pattern.findall(text)
-        for term, definition_body in matches[:8]:
-            cleaned_term = term.strip()
-            cleaned_def = definition_body.strip()
-            if len(cleaned_term) > 3 and len(cleaned_def) > 15:
-                matching_page = 1
-                for chk in chunks:
-                    if cleaned_term.lower() in chk.chunk_text_content.lower():
-                        matching_page = chk.source_page_number or 1
-                        break
-
-                shuffled_options = [
-                    (cleaned_def[:100], "correct"),
-                    ("The physical extraction of rare earth minerals from rock formations", "distractor1"),
-                    ("A hardware protocol governing motherboard bus voltages", "distractor2"),
-                    ("A legal standard determining intellectual property licensing in Europe", "distractor3")
-                ]
-                random.shuffle(shuffled_options)
-                correct_letter = "A"
-                for idx, (opt_text, opt_role) in enumerate(shuffled_options):
-                    if opt_role == "correct":
-                        correct_letter = ["A", "B", "C", "D"][idx]
-
-                questions.append({
-                    "question_text": f"According to the text, what is {cleaned_term}?",
-                    "option_a": shuffled_options[0][0],
-                    "option_b": shuffled_options[1][0],
-                    "option_c": shuffled_options[2][0],
-                    "option_d": shuffled_options[3][0],
-                    "correct_option": correct_letter,
-                    "explanation": f"The document defines {cleaned_term} as: {cleaned_def}.",
-                    "source_page_number": matching_page
-                })
-
-        return questions
-
-    @classmethod
-    def _extract_general_fact_quiz_items(cls, text: str, chunks: List[DocumentChunkRecord]) -> List[Dict[str, Any]]:
-        questions = []
-        bullet_points = re.findall(r"(?:•|\*|-|\d+\.)\s+([A-Z][^\.\n]{20,120}\.)", text)
-
-        for bp in bullet_points[:5]:
-            sentence = bp.strip()
-            words = sentence.split()
-            if len(words) >= 6:
-                source_page = 1
-                for chk in chunks:
-                    if words[0] in chk.chunk_text_content:
-                        source_page = chk.source_page_number or 1
-                        break
-
-                questions.append({
-                    "question_text": f"Which statement is directly supported by the document analysis?",
-                    "option_a": sentence,
-                    "option_b": "All operations must strictly execute on mainframe hardware without networks.",
-                    "option_c": "The system completely disables automated processing and indexing.",
-                    "option_d": "Standard manual paperwork is mandated for every transaction.",
-                    "correct_option": "A",
-                    "explanation": f"Document context confirms: '{sentence}'.",
-                    "source_page_number": source_page
-                })
-
-        return questions
 
     @classmethod
     async def get_document_questions(
