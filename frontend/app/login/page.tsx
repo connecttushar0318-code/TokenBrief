@@ -84,7 +84,7 @@ export default function LoginPage() {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          if (res.status === 403 && data.detail && data.detail.includes("not verified")) {
+          if (res.status === 403 && data.detail && typeof data.detail === "string" && data.detail.includes("not verified")) {
             setFormData((prev) => ({
               ...prev,
               email: formData.username.includes("@") ? formData.username : prev.email,
@@ -93,7 +93,12 @@ export default function LoginPage() {
             setMode("verify_otp");
             return;
           }
-          throw new Error(data.detail || "Authentication failed. Check your username and password.");
+          const errorMsg = typeof data.detail === "string" 
+            ? data.detail 
+            : Array.isArray(data.detail) 
+              ? data.detail.map((d: any) => d.msg).join(", ") 
+              : "Authentication failed. Check your username and password.";
+          throw new Error(errorMsg);
         }
 
         router.push("/dashboard");
@@ -120,7 +125,12 @@ export default function LoginPage() {
 
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          throw new Error(data.detail || "Registration failed");
+          const errorMsg = typeof data.detail === "string" 
+            ? data.detail 
+            : Array.isArray(data.detail) 
+              ? data.detail.map((d: any) => d.msg).join(", ") 
+              : "Registration failed";
+          throw new Error(errorMsg);
         }
 
         const otpMatch = data.message?.match(/Sandbox OTP:\s*(\d+)/);
@@ -207,7 +217,11 @@ export default function LoginPage() {
         setMode("login");
       }
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred");
+      if (err.name === "TypeError" && (err.message === "Failed to fetch" || err.message?.includes("fetch"))) {
+        setError("Connecting to cloud server... On Render free tier, the backend takes ~30-45s to wake up from idle. Please wait 10 seconds and try again.");
+      } else {
+        setError(err.message || "An unexpected error occurred");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -238,7 +252,11 @@ export default function LoginPage() {
       }
       setSuccessMsg(data.message || "Fresh OTP dispatched to your inbox");
     } catch (err: any) {
-      setError(err.message || "Failed to resend code");
+      if (err.name === "TypeError" && (err.message === "Failed to fetch" || err.message?.includes("fetch"))) {
+        setError("Connecting to cloud server... The backend is waking up, please retry in a moment.");
+      } else {
+        setError(err.message || "Failed to resend code");
+      }
     } finally {
       setIsLoading(false);
     }

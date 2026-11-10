@@ -140,7 +140,7 @@ class EmailNotificationService:
             part = MIMEText(html_content, "html")
             msg.attach(part)
 
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=3) as server:
                 server.starttls()
                 server.login(settings.gmail_sender_email, settings.gmail_app_password.replace(" ", ""))
                 server.sendmail(settings.gmail_sender_email, recipient_email, msg.as_string())
