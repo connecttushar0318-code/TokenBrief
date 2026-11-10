@@ -40,7 +40,7 @@ class ConfigurationSettings:
     embedding_model_name: str = os.environ.get("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
     document_upload_directory: str = os.environ.get("UPLOAD_DIR", "uploads")
     resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
-    resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "DocuVibe AI <onboarding@resend.dev>")
+    resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "TokenBrief Intelligence <onboarding@resend.dev>")
     gmail_sender_email: str = os.environ.get("GMAIL_SENDER_EMAIL", "connect.tushar0318@gmail.com")
     gmail_app_password: str = os.environ.get("GMAIL_APP_PASSWORD", "")
     otp_expiration_minutes: int = int(os.environ.get("OTP_EXPIRATION_MINUTES", "10"))
