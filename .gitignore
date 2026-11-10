@@ -11,6 +11,7 @@ env/
 venv/
 uploads/
 *.pdf
+!TokenBrief_Architecture_and_Viva_Guide.pdf
 .idea/
 .vscode/
 
