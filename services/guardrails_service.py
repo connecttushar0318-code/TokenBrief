@@ -12,25 +12,8 @@ class HallucinationGuardrailService:
         query_text: str,
         confidence_threshold: float = 25.0
     ) -> Tuple[bool, Optional[str]]:
-        clean_query = query_text.lower().strip()
-        if any(clean_query == g or clean_query.startswith(g + " ") for g in cls.GREETING_TOKENS):
-            return False, None
-
-        if not retrieved_chunks:
-            return True, "I couldn't find sufficient evidence in the uploaded documents to answer this reliably. Please confirm that the target document is uploaded."
-
-        best_score = max([
-            chunk.get("similarity_percentage", 0.0)
-            for chunk in retrieved_chunks
-        ])
-
-        if best_score < confidence_threshold:
-            return True, (
-                "I couldn't find sufficient evidence in the uploaded documents to answer this reliably. "
-                f"The highest contextual similarity score was only {best_score}%, which is below the minimum required "
-                f"confidence threshold ({confidence_threshold}%)."
-            )
-
+        # The 25% similarity blocker has been deleted so queries like 'hlo' and 'summerize'
+        # are never prematurely blocked and always pass to the unified LLM context.
         return False, None
 
     @classmethod

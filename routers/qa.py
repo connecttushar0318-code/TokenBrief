@@ -9,6 +9,7 @@ from database import get_database_session
 from models import (
     UserAccount,
     DocumentRecord,
+    DocumentChunkRecord,
     SemanticQueryCacheRecord,
     ConversationThreadRecord,
     ConversationMessageRecord
@@ -28,7 +29,13 @@ from schemas import (
 )
 from security import get_optional_authenticated_user, get_authenticated_user
 from services.search_service import VectorSimilaritySearchEngine
-from services.qa_service import DocumentQuestionAnsweringService
+from services.qa_service import (
+    DocumentQuestionAnsweringService,
+    ask_tokenbrief,
+    clean_text,
+    build_full_file_digest,
+    LLMClient
+)
 from services.cache_service import SemanticQueryCacheService
 from services.analytics_service import AnalyticsDashboardService
 from services.query_router import QueryIntentRouterService, QueryIntent
@@ -48,9 +55,102 @@ def _can_use_document_cache(
 ) -> bool:
     if document_id is None or not matched_chunks:
         return False
-    if DocumentQuestionAnsweringService.is_greeting(message_text):
+    lower = message_text.lower().strip()
+    if any(lower.startswith(g) or lower == g for g in ["hlo", "hello", "hi", "hey", "hola", "thanks"]):
         return False
     return all(chunk.get("document_id") == document_id for chunk in matched_chunks)
+
+async def _execute_unified_qa(
+    message_text: str,
+    target_doc_id: Optional[int],
+    user_id: Optional[int],
+    user_doc_inventory: List[dict],
+    database_session: AsyncSession
+) -> tuple:
+    active_filename = "Workspace Documents"
+    if target_doc_id:
+        match_doc = next((d for d in user_doc_inventory if d["id"] == target_doc_id), None)
+        if match_doc:
+            active_filename = match_doc["filename"]
+    elif user_doc_inventory:
+        active_filename = user_doc_inventory[0]["filename"]
+
+    # 1. Fetch all chunks of the document/workspace for full_file_digest
+    chunks_query = select(DocumentChunkRecord)
+    if target_doc_id:
+        chunks_query = chunks_query.where(DocumentChunkRecord.document_id == target_doc_id)
+    elif user_doc_inventory:
+        chunks_query = chunks_query.where(DocumentChunkRecord.document_id == user_doc_inventory[0]["id"])
+    else:
+        chunks_query = chunks_query.limit(200)
+
+    chunks_query = chunks_query.order_by(DocumentChunkRecord.source_page_number, DocumentChunkRecord.chunk_index_number).limit(300)
+    chunks_result = await database_session.execute(chunks_query)
+    all_chunk_records = chunks_result.scalars().all()
+
+    all_file_chunks = [
+        {
+            "chunk_id": c.id,
+            "document_id": c.document_id,
+            "page": c.source_page_number or 1,
+            "text": c.chunk_text_content,
+        }
+        for c in all_chunk_records
+    ]
+
+    # 2. Retrieve Top-K chunks via Vector Similarity Search (no 25% similarity threshold blocker)
+    matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
+        database_session=database_session,
+        user_query_text=message_text,
+        filter_document_id=target_doc_id,
+        filter_user_id=user_id,
+        maximum_results_count=5
+    )
+
+    top_k_chunks = [
+        {
+            "chunk_id": c["chunk_id"],
+            "document_id": c["document_id"],
+            "document_filename": c.get("document_filename", active_filename),
+            "page": c.get("source_page_number") or 1,
+            "text": c.get("chunk_text_content", ""),
+            "similarity_percentage": c.get("similarity_percentage", 0.0),
+            "rerank_score": c.get("rerank_score")
+        }
+        for c in matched_chunks
+    ]
+
+    # 3. Call the single unified function: ask_tokenbrief
+    result = await ask_tokenbrief(
+        user_message=message_text,
+        file_name=active_filename,
+        all_file_chunks=all_file_chunks,
+        top_k_chunks=top_k_chunks,
+        llm_client=LLMClient
+    )
+
+    # 4. Build sources ONLY from pages the AI actually used (empty [] for greetings like "hlo" / "hola"!)
+    sources = []
+    cited_pages = set(result.get("cited_pages", []))
+    if cited_pages:
+        for page_num in sorted(list(cited_pages)):
+            match = next((c for c in top_k_chunks if c.get("page") == page_num), None)
+            if not match:
+                match = next((c for c in all_file_chunks if c.get("page") == page_num), None)
+            if match:
+                sources.append(
+                    SourceReferenceChunk(
+                        chunk_id=match.get("chunk_id", 0),
+                        document_id=match.get("document_id", target_doc_id or 0),
+                        document_filename=match.get("document_filename", active_filename),
+                        source_page_number=page_num,
+                        chunk_text_content=clean_text(match.get("text", "")),
+                        similarity_percentage=match.get("similarity_percentage", 95.0),
+                        rerank_score=match.get("rerank_score")
+                    )
+                )
+
+    return result, sources, query_vector
 
 @router.post("/ask", response_model=AnswerWithSourcesResponse)
 async def ask_document_question(
@@ -74,198 +174,16 @@ async def ask_document_question(
             for row in inventory_result.all()
         ]
 
-        intent_decision = QueryIntentRouterService.classify_query_intent(
-            user_query_text=question_payload.question_text,
-            filter_document_id=target_doc_id,
-            available_documents=user_doc_inventory
+        result, sources, query_vector = await _execute_unified_qa(
+            message_text=question_payload.question_text,
+            target_doc_id=target_doc_id,
+            user_id=user_identifier_id,
+            user_doc_inventory=user_doc_inventory,
+            database_session=database_session
         )
-
-        if intent_decision["intent"] == QueryIntent.GLOBAL_SUMMARY:
-            target_summary_id = target_doc_id or (user_doc_inventory[0]["id"] if user_doc_inventory else None)
-            if target_summary_id:
-                hierarchical_data = await HierarchicalDocumentSummaryService.get_or_build_hierarchical_summary(
-                    document_id=target_summary_id,
-                    database_session=database_session
-                )
-                formatted_summary = (
-                    f"**Executive Document Summary for '{hierarchical_data['filename']}' ({hierarchical_data['total_sections']} Sections):**\n\n"
-                    f"{hierarchical_data['executive_summary']}\n\n"
-                    "**Key Takeaways:**\n"
-                    + "\n".join(f"- {t}" for t in hierarchical_data['key_takeaways'])
-                )
-                latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-                try:
-                    await AnalyticsDashboardService.record_query_log(
-                        database_session=database_session,
-                        question_text=question_payload.question_text,
-                        latency_ms=latency_ms,
-                        cache_hit=False,
-                        model_used="Hierarchical Map-Reduce Engine",
-                        estimated_token_count=max(20, len(formatted_summary) // 4),
-                        user_id=user_identifier_id,
-                        document_id=target_summary_id
-                    )
-                except Exception:
-                    pass
-
-                return AnswerWithSourcesResponse(
-                    question_text=question_payload.question_text,
-                    generated_answer=formatted_summary,
-                    source_chunks=[],
-                    cache_hit=False
-                )
-
-        if intent_decision["intent"] == QueryIntent.MULTI_DOC_COMPARE and len(intent_decision.get("matched_doc_ids", [])) >= 2:
-            comparison_data = await DocumentComparisonService.compare_documents(
-                document_ids=intent_decision["matched_doc_ids"][:4],
-                database_session=database_session
-            )
-            matrix_bullets = [f"- **{r.criterion}:** {r.key_difference}" for r in comparison_data.comparison_matrix]
-            formatted_comparison = (
-                f"**Cross-Document Comparison:**\n\n{comparison_data.synthesis_verdict}\n\n"
-                f"**Key Structural Differences:**\n" + "\n".join(matrix_bullets)
-            )
-            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-            try:
-                await AnalyticsDashboardService.record_query_log(
-                    database_session=database_session,
-                    question_text=question_payload.question_text,
-                    latency_ms=latency_ms,
-                    cache_hit=False,
-                    model_used="Document Comparison Engine",
-                    estimated_token_count=max(20, len(formatted_comparison) // 4),
-                    user_id=user_identifier_id,
-                    document_id=None
-                )
-            except Exception:
-                pass
-
-            return AnswerWithSourcesResponse(
-                question_text=question_payload.question_text,
-                generated_answer=formatted_comparison,
-                source_chunks=[],
-                cache_hit=False
-            )
-
-        matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
-            database_session=database_session,
-            user_query_text=question_payload.question_text,
-            filter_document_id=target_doc_id,
-            filter_user_id=user_identifier_id,
-            maximum_results_count=question_payload.maximum_results
-        )
-
-        should_abstain, abstention_message = HallucinationGuardrailService.evaluate_retrieval_confidence(
-            retrieved_chunks=matched_chunks,
-            query_text=question_payload.question_text,
-            confidence_threshold=25.0
-        )
-        if should_abstain and abstention_message:
-            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-            try:
-                await AnalyticsDashboardService.record_query_log(
-                    database_session=database_session,
-                    question_text=question_payload.question_text,
-                    latency_ms=latency_ms,
-                    cache_hit=False,
-                    model_used="Hallucination Guardrail",
-                    estimated_token_count=15,
-                    user_id=user_identifier_id,
-                    document_id=target_doc_id
-                )
-            except Exception:
-                pass
-
-            return AnswerWithSourcesResponse(
-                question_text=question_payload.question_text,
-                generated_answer=abstention_message,
-                source_chunks=[],
-                cache_hit=False
-            )
-
-        can_use_cache = _can_use_document_cache(
-            question_payload.question_text,
-            target_doc_id,
-            matched_chunks
-        )
-        cached_hit = None
-        if can_use_cache:
-            cached_hit = await SemanticQueryCacheService.get_cached_answer(
-                database_session=database_session,
-                query_vector=query_vector,
-                filter_document_id=target_doc_id
-            )
-
-        if cached_hit:
-            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-            try:
-                await AnalyticsDashboardService.record_query_log(
-                    database_session=database_session,
-                    question_text=question_payload.question_text,
-                    latency_ms=latency_ms,
-                    cache_hit=True,
-                    model_used="Semantic Cache",
-                    estimated_token_count=max(10, (len(question_payload.question_text) + len(cached_hit["answer"])) // 4),
-                    user_id=user_identifier_id,
-                    document_id=target_doc_id
-                )
-            except Exception:
-                pass
-
-            return AnswerWithSourcesResponse(
-                question_text=question_payload.question_text,
-                generated_answer=cached_hit["answer"],
-                source_chunks=[SourceReferenceChunk(**s) for s in cached_hit["sources"]],
-                cache_hit=True,
-                cached_query=cached_hit["cached_query"]
-            )
-
-        user_name_identifier = optional_user_account.username if optional_user_account else None
-
-        active_scope_name = "All documents"
-        if target_doc_id:
-            matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
-            if matching_scope:
-                active_scope_name = matching_scope["filename"]
-
-        model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
-            user_question_text=question_payload.question_text,
-            retrieved_context_chunks=matched_chunks,
-            user_name=user_name_identifier,
-            doc_inventory=user_doc_inventory,
-            active_filter=active_scope_name
-        )
-
-        verified_answer, _ = HallucinationGuardrailService.verify_and_align_citations(
-            answer_text=model_answer,
-            retrieved_chunks=matched_chunks
-        )
-
-        source_references = [
-            SourceReferenceChunk(
-                chunk_id=chunk["chunk_id"],
-                document_id=chunk["document_id"],
-                document_filename=chunk["document_filename"],
-                source_page_number=chunk["source_page_number"],
-                chunk_text_content=chunk["chunk_text_content"],
-                similarity_percentage=chunk["similarity_percentage"],
-                rerank_score=chunk.get("rerank_score")
-            )
-            for chunk in matched_chunks
-        ]
-
-        if can_use_cache:
-            await SemanticQueryCacheService.store_query_cache(
-                database_session=database_session,
-                query_text=question_payload.question_text,
-                query_vector=query_vector,
-                answer_text=verified_answer,
-                sources=[s.model_dump() for s in source_references],
-                document_id=target_doc_id
-            )
 
         latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-        active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Neural Engine"
+        active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Unified Engine"
         try:
             await AnalyticsDashboardService.record_query_log(
                 database_session=database_session,
@@ -273,7 +191,7 @@ async def ask_document_question(
                 latency_ms=latency_ms,
                 cache_hit=False,
                 model_used=active_model,
-                estimated_token_count=max(15, (len(question_payload.question_text) + len(verified_answer)) // 4),
+                estimated_token_count=max(15, (len(question_payload.question_text) + len(result["answer"])) // 4),
                 user_id=user_identifier_id,
                 document_id=target_doc_id
             )
@@ -282,8 +200,8 @@ async def ask_document_question(
 
         return AnswerWithSourcesResponse(
             question_text=question_payload.question_text,
-            generated_answer=verified_answer,
-            source_chunks=source_references,
+            generated_answer=result["answer"],
+            source_chunks=sources,
             cache_hit=False
         )
 
@@ -318,205 +236,25 @@ async def convenient_quick_chat(
         for row in inventory_result.all()
     ]
 
-    intent_decision = QueryIntentRouterService.classify_query_intent(
-        user_query_text=payload.message_text,
-        filter_document_id=target_doc_id,
-        available_documents=user_doc_inventory
+    result, sources, query_vector = await _execute_unified_qa(
+        message_text=payload.message_text,
+        target_doc_id=target_doc_id,
+        user_id=user_id,
+        user_doc_inventory=user_doc_inventory,
+        database_session=database_session
     )
 
-    if intent_decision["intent"] == QueryIntent.GLOBAL_SUMMARY:
-        target_summary_id = target_doc_id or (user_doc_inventory[0]["id"] if user_doc_inventory else None)
-        if target_summary_id:
-            hierarchical_data = await HierarchicalDocumentSummaryService.get_or_build_hierarchical_summary(
-                document_id=target_summary_id,
-                database_session=database_session
-            )
-            formatted_summary = (
-                f"**Executive Document Summary for '{hierarchical_data['filename']}' ({hierarchical_data['total_sections']} Sections):**\n\n"
-                f"{hierarchical_data['executive_summary']}\n\n"
-                "**Key Takeaways:**\n"
-                + "\n".join(f"- {t}" for t in hierarchical_data['key_takeaways'])
-            )
-            latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-            try:
-                await AnalyticsDashboardService.record_query_log(
-                    database_session=database_session,
-                    question_text=payload.message_text,
-                    latency_ms=latency_ms,
-                    cache_hit=False,
-                    model_used="Hierarchical Map-Reduce Engine",
-                    estimated_token_count=max(20, len(formatted_summary) // 4),
-                    user_id=user_id,
-                    document_id=target_summary_id
-                )
-            except Exception:
-                pass
-
-            return QuickChatResponse(
-                session_id=session_id,
-                answer=formatted_summary,
-                sources=[],
-                cache_hit=False
-            )
-
-    if intent_decision["intent"] == QueryIntent.MULTI_DOC_COMPARE and len(intent_decision.get("matched_doc_ids", [])) >= 2:
-        comparison_data = await DocumentComparisonService.compare_documents(
-            document_ids=intent_decision["matched_doc_ids"][:4],
-            database_session=database_session
-        )
-        matrix_bullets = [f"- **{r.criterion}:** {r.key_difference}" for r in comparison_data.comparison_matrix]
-        formatted_comparison = (
-            f"**Cross-Document Comparison:**\n\n{comparison_data.synthesis_verdict}\n\n"
-            f"**Key Structural Differences:**\n" + "\n".join(matrix_bullets)
-        )
-        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-        try:
-            await AnalyticsDashboardService.record_query_log(
-                database_session=database_session,
-                question_text=payload.message_text,
-                latency_ms=latency_ms,
-                cache_hit=False,
-                model_used="Document Comparison Engine",
-                estimated_token_count=max(20, len(formatted_comparison) // 4),
-                user_id=user_id,
-                document_id=None
-            )
-        except Exception:
-            pass
-
-        return QuickChatResponse(
-            session_id=session_id,
-            answer=formatted_comparison,
-            sources=[],
-            cache_hit=False
-        )
-
-    matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
-        database_session=database_session,
-        user_query_text=payload.message_text,
-        filter_document_id=target_doc_id,
-        filter_user_id=user_id,
-        maximum_results_count=10 if target_doc_id is not None else 8
-    )
-
-    should_abstain, abstention_message = HallucinationGuardrailService.evaluate_retrieval_confidence(
-        retrieved_chunks=matched_chunks,
-        query_text=payload.message_text,
-        confidence_threshold=25.0
-    )
-    if should_abstain and abstention_message:
-        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-        try:
-            await AnalyticsDashboardService.record_query_log(
-                database_session=database_session,
-                question_text=payload.message_text,
-                latency_ms=latency_ms,
-                cache_hit=False,
-                model_used="Hallucination Guardrail",
-                estimated_token_count=15,
-                user_id=user_id,
-                document_id=target_doc_id
-            )
-        except Exception:
-            pass
-
-        return QuickChatResponse(
-            session_id=session_id,
-            answer=abstention_message,
-            sources=[],
-            cache_hit=False
-        )
-
-    can_use_cache = _can_use_document_cache(
-        payload.message_text,
-        target_doc_id,
-        matched_chunks
-    )
-    cached_hit = None
-    if can_use_cache:
-        cached_hit = await SemanticQueryCacheService.get_cached_answer(
-            database_session=database_session,
-            query_vector=query_vector,
-            filter_document_id=target_doc_id
-        )
-
-    if cached_hit:
-        latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-        try:
-            await AnalyticsDashboardService.record_query_log(
-                database_session=database_session,
-                question_text=payload.message_text,
-                latency_ms=latency_ms,
-                cache_hit=True,
-                model_used="Semantic Cache",
-                estimated_token_count=max(10, (len(payload.message_text) + len(cached_hit["answer"])) // 4),
-                user_id=user_id,
-                document_id=target_doc_id
-            )
-        except Exception:
-            pass
-
-        return QuickChatResponse(
-            session_id=session_id,
-            answer=cached_hit["answer"],
-            sources=[SourceReferenceChunk(**s) for s in cached_hit["sources"]],
-            cache_hit=True
-        )
-
-    user_name_identifier = optional_user_account.username if optional_user_account else None
-
-    active_scope_name = "All documents"
-    if target_doc_id:
-        matching_scope = next((item for item in user_doc_inventory if item["id"] == target_doc_id), None)
-        if matching_scope:
-            active_scope_name = matching_scope["filename"]
+    answer_text = result["answer"]
 
     history_records = SESSION_MEMORY_BUFFER.get(session_id, [])
-    model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
-        user_question_text=payload.message_text,
-        retrieved_context_chunks=matched_chunks,
-        user_name=user_name_identifier,
-        conversation_history=history_records,
-        doc_inventory=user_doc_inventory,
-        active_filter=active_scope_name
-    )
-
-    verified_answer, _ = HallucinationGuardrailService.verify_and_align_citations(
-        answer_text=model_answer,
-        retrieved_chunks=matched_chunks
-    )
-
     history_records.append({"role": "user", "content": payload.message_text})
-    history_records.append({"role": "assistant", "content": verified_answer})
+    history_records.append({"role": "assistant", "content": answer_text})
     if len(history_records) > 8:
         history_records = history_records[-8:]
     SESSION_MEMORY_BUFFER[session_id] = history_records
 
-    sources = [
-        SourceReferenceChunk(
-            chunk_id=c["chunk_id"],
-            document_id=c["document_id"],
-            document_filename=c["document_filename"],
-            source_page_number=c["source_page_number"],
-            chunk_text_content=c["chunk_text_content"],
-            similarity_percentage=c["similarity_percentage"],
-            rerank_score=c.get("rerank_score")
-        )
-        for c in matched_chunks
-    ]
-
-    if can_use_cache:
-        await SemanticQueryCacheService.store_query_cache(
-            database_session=database_session,
-            query_text=payload.message_text,
-            query_vector=query_vector,
-            answer_text=verified_answer,
-            sources=[s.model_dump() for s in sources],
-            document_id=target_doc_id
-        )
-
     latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-    active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Neural Engine"
+    active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Unified Engine"
     try:
         await AnalyticsDashboardService.record_query_log(
             database_session=database_session,
@@ -524,7 +262,7 @@ async def convenient_quick_chat(
             latency_ms=latency_ms,
             cache_hit=False,
             model_used=active_model,
-            estimated_token_count=max(15, (len(payload.message_text) + len(verified_answer)) // 4),
+            estimated_token_count=max(15, (len(payload.message_text) + len(answer_text)) // 4),
             user_id=user_id,
             document_id=target_doc_id
         )
@@ -533,7 +271,7 @@ async def convenient_quick_chat(
 
     return QuickChatResponse(
         session_id=session_id,
-        answer=verified_answer,
+        answer=answer_text,
         sources=sources,
         cache_hit=False
     )
@@ -637,14 +375,6 @@ async def send_message_in_thread(
 
     thread_doc_id = thread.document_id
 
-    matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
-        database_session=database_session,
-        user_query_text=payload.message_text,
-        filter_document_id=thread_doc_id,
-        filter_user_id=current_user.id,
-        maximum_results_count=10 if thread_doc_id is not None else 8
-    )
-
     inventory_stmt = select(DocumentRecord.id, DocumentRecord.filename, DocumentRecord.total_page_count).where(DocumentRecord.user_id == current_user.id)
     inventory_result = await database_session.execute(inventory_stmt)
     user_doc_inventory = [
@@ -652,19 +382,15 @@ async def send_message_in_thread(
         for row in inventory_result.all()
     ]
 
-    active_scope_name = "All documents"
-    if thread_doc_id:
-        matching_scope = next((item for item in user_doc_inventory if item["id"] == thread_doc_id), None)
-        if matching_scope:
-            active_scope_name = matching_scope["filename"]
-
-    model_answer = DocumentQuestionAnsweringService.generate_grounded_answer(
-        user_question_text=payload.message_text,
-        retrieved_context_chunks=matched_chunks,
-        user_name=current_user.username,
-        doc_inventory=user_doc_inventory,
-        active_filter=active_scope_name
+    result, source_references, _ = await _execute_unified_qa(
+        message_text=payload.message_text,
+        target_doc_id=thread_doc_id,
+        user_id=current_user.id,
+        user_doc_inventory=user_doc_inventory,
+        database_session=database_session
     )
+
+    model_answer = result["answer"]
 
     bot_msg = ConversationMessageRecord(
         thread_id=thread_id,
@@ -673,19 +399,6 @@ async def send_message_in_thread(
     )
     database_session.add(bot_msg)
     await database_session.commit()
-
-    source_references = [
-        SourceReferenceChunk(
-            chunk_id=chunk["chunk_id"],
-            document_id=chunk["document_id"],
-            document_filename=chunk["document_filename"],
-            source_page_number=chunk["source_page_number"],
-            chunk_text_content=chunk["chunk_text_content"],
-            similarity_percentage=chunk["similarity_percentage"],
-            rerank_score=chunk.get("rerank_score")
-        )
-        for chunk in matched_chunks
-    ]
 
     return AnswerWithSourcesResponse(
         question_text=payload.message_text,
