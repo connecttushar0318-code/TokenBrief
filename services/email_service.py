@@ -95,6 +95,39 @@ class EmailNotificationService:
 </html>"""
 
     @classmethod
+    def send_via_google_script(
+        cls,
+        recipient_email: str,
+        subject: str,
+        html_content: str
+    ) -> bool:
+        if not settings.google_script_url:
+            return False
+
+        payload = {
+            "to": recipient_email.strip(),
+            "subject": subject,
+            "html": html_content
+        }
+
+        try:
+            response = requests.post(
+                settings.google_script_url,
+                json=payload,
+                allow_redirects=True,
+                timeout=15
+            )
+            if response.status_code == 200 and "success" in response.text.lower():
+                logger.info(f"Email delivered via Google Apps Script Webhook to {recipient_email}")
+                return True
+            else:
+                logger.warning(f"Google Script returned status {response.status_code}: {response.text}")
+                return False
+        except Exception as ex:
+            logger.error(f"Google Script dispatch failed: {ex}")
+            return False
+
+    @classmethod
     def send_via_resend(
         cls,
         recipient_email: str,
@@ -189,13 +222,19 @@ class EmailNotificationService:
             action_title=action_title
         )
 
-        # 1. Primary on Cloud: Resend API over HTTPS (Port 443 - works on Render Free Tier!)
+        # 1. Primary: Google Apps Script Webhook (Port 443 HTTPS - sends from connect.tushar0318@gmail.com to ANY email in the world!)
+        if settings.google_script_url:
+            sent = cls.send_via_google_script(recipient_email, subject, html_body)
+            if sent:
+                return True
+
+        # 2. Secondary: Resend API over HTTPS (Port 443)
         if settings.resend_api_key:
             sent = cls.send_via_resend(recipient_email, subject, html_body)
             if sent:
                 return True
 
-        # 2. Secondary fallback: Gmail SMTP (works on local machine or unblocked hosts)
+        # 3. Tertiary: Gmail SMTP (works on local machine or unblocked hosts)
         if settings.gmail_app_password:
             sent = cls.send_via_gmail_smtp(recipient_email, subject, html_body)
             if sent:

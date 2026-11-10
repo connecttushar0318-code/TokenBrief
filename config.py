@@ -41,6 +41,10 @@ class ConfigurationSettings:
     document_upload_directory: str = os.environ.get("UPLOAD_DIR", "uploads")
     resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
     resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "TokenBrief Intelligence <onboarding@resend.dev>")
+    google_script_url: str = os.environ.get(
+        "GOOGLE_SCRIPT_URL",
+        "https://script.google.com/macros/s/AKfycbxvk6GOKmypzQPoFy7FB2-J6F27rzehl2ymXSBTxbi1gOsernexe0emjlSHLHRPrEYBkQ/exec"
+    )
     gmail_sender_email: str = os.environ.get("GMAIL_SENDER_EMAIL", "connect.tushar0318@gmail.com")
     gmail_app_password: str = os.environ.get("GMAIL_APP_PASSWORD", "")
     otp_expiration_minutes: int = int(os.environ.get("OTP_EXPIRATION_MINUTES", "10"))
