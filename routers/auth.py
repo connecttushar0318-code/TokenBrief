@@ -61,7 +61,7 @@ async def register_new_user_account(
         )
     )
     existing_result = await database_session.execute(verification_query)
-    existing_user = existing_result.scalar_one_or_none()
+    existing_user = existing_result.scalars().first()
 
     if existing_user:
         if existing_user.is_verified:
@@ -240,14 +240,27 @@ async def login_and_generate_token(
             detail="Username and password are required"
         )
 
-    account_lookup_query = select(UserAccount).where(
-        or_(
-            UserAccount.username.ilike(input_username),
-            UserAccount.email_address.ilike(input_username)
+    account_lookup_query = (
+        select(UserAccount)
+        .where(
+            or_(
+                UserAccount.username.ilike(input_username),
+                UserAccount.email_address.ilike(input_username)
+            )
         )
+        .order_by(UserAccount.is_verified.desc(), UserAccount.id.desc())
     )
     query_result = await database_session.execute(account_lookup_query)
-    user_account = query_result.scalar_one_or_none()
+    user_accounts = query_result.scalars().all()
+
+    user_account = None
+    for account in user_accounts:
+        if verify_user_password(input_password, account.hashed_password):
+            user_account = account
+            break
+
+    if not user_account:
+        user_account = user_accounts[0] if user_accounts else None
 
     if not user_account or not verify_user_password(input_password, user_account.hashed_password):
         raise HTTPException(
