@@ -31,22 +31,35 @@ def build_full_file_digest(chunks: List[Dict]) -> str:
     if total_sections == 0:
         return "No document text available."
 
-    # Dynamically budget characters per page so 50 pages stays around ~12,000 chars (~3,000 tokens)
-    chars_per_page = max(350, min(2500, 15000 // max(1, total_sections)))
+    # Dynamically budget characters per page so even 60-page PDFs retain rich goals, body, and conclusions
+    chars_per_page = max(900, min(2500, 42000 // max(1, total_sections)))
 
     digest_lines = []
     for label, texts in grouped.items():
         full_page_text = " ".join(texts)
         if not full_page_text.strip():
             continue
-        # Take the start and end of dense pages snapping to word boundaries so words are never cut in half
+        # Snap digest slices cleanly to sentence/word boundaries without splicing half-sentences together
         if len(full_page_text) > chars_per_page:
             half = chars_per_page // 2
-            start_cut = full_page_text.rfind(" ", 0, half)
-            start_part = full_page_text[:start_cut] if start_cut > 0 else full_page_text[:half]
-            end_cut = full_page_text.find(" ", len(full_page_text) - half)
-            end_part = full_page_text[end_cut:].strip() if end_cut > 0 else full_page_text[-half:]
-            snippet = f"{start_part} ... {end_part}"
+            sent_end = full_page_text.rfind(". ", 0, half)
+            if sent_end < 80:
+                forward_end = full_page_text.find(". ", half, min(len(full_page_text), half + 250))
+                if forward_end > 0:
+                    sent_end = forward_end
+            if sent_end >= 80:
+                start_part = full_page_text[: sent_end + 1]
+            else:
+                start_cut = full_page_text.rfind(" ", 0, half)
+                start_part = full_page_text[:start_cut] if start_cut > 0 else full_page_text[:half]
+
+            sent_start = full_page_text.find(". ", max(0, len(full_page_text) - half))
+            if sent_start > 0 and len(full_page_text) - sent_start > 80:
+                end_part = full_page_text[sent_start + 2 :].strip()
+            else:
+                end_cut = full_page_text.find(" ", len(full_page_text) - half)
+                end_part = full_page_text[end_cut:].strip() if end_cut > 0 else full_page_text[-half:]
+            snippet = f"{start_part}\n...\n{end_part}"
         else:
             snippet = full_page_text
         digest_lines.append(f"[Source Page/Time {label}]: {snippet}")
@@ -128,9 +141,65 @@ class LLMClient:
 
         return cls._local_synthesis(prompt)
 
+    @staticmethod
+    def _strip_page_artifacts(text: str) -> str:
+        # Preserve newline gap across digest "..." markers so disjoint sentences never splice together
+        text = re.sub(r"\s*\n+\.\.\.\n+\s*", "\n", text.strip())
+        text = re.sub(r"^(?:[ivxlcdm]{1,5}|\d{1,3})\s+(?=[A-Za-z])", "", text)
+        return re.sub(r"[ \t]+", " ", text).strip()
+
+    @staticmethod
+    def _is_front_matter(text: str) -> bool:
+        head = text.lower()[:350]
+        boilerplate_markers = (
+            "declaration by the student",
+            "certificate by the supervisor",
+            "acknowledgement",
+            "list of figures",
+            "list of tables",
+            "list of abbreviations",
+            "table of contents",
+            "submitted in partial fulfilment",
+        )
+        return any(m in head for m in boilerplate_markers)
+
+    _CHAP_HEADER_RX = re.compile(
+        r"CHAPTER\s+\d+:\s*(?:(?!\s*\d+\.\d+\b|\s+[A-Z][a-z])[A-Z0-9\s,&/-])+"
+    )
+    _SUB_TITLE_RX = re.compile(
+        r"^\s*(\d+\.\d+\s+[A-Z][A-Za-z0-9\s,&/-]{2,65}?)"
+        r"(?=\s+(?:The|A|An|In|To|For|On|By|As|With|This|These|It|Here|[A-Z][A-Za-z0-9-]*\s+(?!(?:and|or|of|to|the|for|in|on|with|via|by|using|from)\s+[A-Z])[a-z]{2,})\b)"
+    )
+
+    @classmethod
+    def _clean_sentences(cls, text: str, require_capital: bool = True, require_punct_end: bool = True) -> List[str]:
+        parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+        complete = []
+        partial = []
+        for s in parts:
+            s_clean = re.sub(r"^(?:\d{1,3}|[ivxlcdm]{1,4})\s+", "", s.strip())
+            if len(s_clean) < 30 or s_clean.startswith("[Detailed Excerpt"):
+                continue
+            if s_clean in {"...", "...."} or s_clean.count("...") >= 2:
+                continue
+            if len(re.findall(r"\b\d+\.\d+\b", s_clean)) >= 4:
+                continue
+            # Skip isolated table/figure captions or math equation headers without explanation
+            if re.match(r"^(?:Figure|Table|Parameter\s*/\s*Attribute|\(|•\s*Parameters:)", s_clean) and len(s_clean) < 160:
+                continue
+            if require_capital and s_clean and s_clean[0].islower():
+                continue
+            if s_clean.endswith((".", "!", "?")):
+                complete.append(s_clean)
+            else:
+                partial.append(s_clean)
+        if require_punct_end and complete:
+            return complete
+        return complete or partial
+
     @classmethod
     def _local_synthesis(cls, prompt: str) -> str:
-        """Clean local neural synthesizer that handles greetings, typos, and summaries without cutting words."""
+        """Clean local neural synthesizer that handles greetings, targeted sections, and executive summaries."""
         user_msg_match = re.search(r'=== USER MESSAGE ===\s*"([^"]+)"', prompt, re.DOTALL)
         user_message = user_msg_match.group(1).strip() if user_msg_match else ""
 
@@ -147,68 +216,178 @@ class LLMClient:
         clean_words = set(re.findall(r"\b\w+\b", clean_lower))
 
         # 1. Natural greeting handling
-        greeting_tokens = {"hlo", "helo", "hello", "hi", "hey", "hola", "namaste", "sup", "yo", "morning", "afternoon", "evening", "thanks", "thank"}
-        is_greeting = any(clean_lower.startswith(w) or clean_lower == w for w in ["hlo", "hello", "hey", "hi", "hola", "how are you", "who are you", "what are you doing", "what's up", "namaste", "thanks"]) or bool(clean_words.intersection(greeting_tokens))
-
-        non_greeting_intents = {"summarize", "summerize", "summary", "explain", "about", "what is", "marks", "cgpa", "skills", "projects", "weka", "data"}
-        if is_greeting and not any(k in clean_lower for k in non_greeting_intents):
+        if is_pure_greeting(user_message):
             ans = f"Hello! 👋 I am **TokenBrief AI**, your intelligent document and video assistant. **{file_name}** is loaded and ready to explore in depth. You can ask me to summarize the core topics, explain specific concepts, or find detailed metrics across your files!"
             return json.dumps({"answer": ans, "cited_pages": []})
 
         page_snippets = re.findall(r"\[Source Page/Time (\w+)\]:\s*(.*?)(?=\n\n\[Source Page/Time|\Z)", overview_text, re.DOTALL)
-        found_pages = []
-        for p_label, _ in page_snippets:
+        excerpt_blocks = re.findall(r"\[Detailed Excerpt - Page/Time (\w+)\]:\s*(.*?)(?=\n\n\[Detailed Excerpt|\Z)", excerpts_text, re.DOTALL)
+
+        def _parse_int(lbl: str, default: int = 1) -> int:
             try:
-                found_pages.append(int(p_label))
+                return int(lbl)
             except Exception:
-                pass
+                return default
 
-        # 2. Summary & Overview handling (e.g. 'summerize the core parts only')
-        summary_triggers = {"summarize", "summerize", "summary", "explain", "overview", "core", "main points", "takeaways", "all about", "brief"}
-        is_summary = any(t in clean_lower for t in summary_triggers)
+        word_nums = r"one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|sixth"
+        has_specific_target = bool(
+            re.search(rf"\b(?:section|chapter|unit|module|part|page|appendix|table|figure)\s*(?:\d+(?:\.\d+)?|{word_nums})\b|\b\d+\.\d+\b", clean_lower)
+        )
 
-        if is_summary or not excerpts_text.strip():
-            summary_blocks = [
-                f"### Executive Overview: {file_name}\n",
-                f"This document comprises {len(page_snippets) if page_snippets else 1} documented sections. Below is a comprehensive executive summary highlighting the primary units, core methodologies, and essential takeaways:\n"
+        global_summary_phrases = ("executive summary", "summarize", "summerize", "summary", "overview", "main points", "takeaways", "all about", "brief")
+        explain_whole_doc = "explain" in clean_lower and any(w in clean_lower for w in ("document", "pdf", "file", "report", "whole", "entire"))
+        is_summary = (not has_specific_target) and (any(t in clean_lower for t in global_summary_phrases) or explain_whole_doc)
+
+        # 2. Global Executive Summary (skipping Cover / Declaration / Certificate / TOC)
+        if is_summary or (not excerpts_text.strip() and page_snippets):
+            body_pages = []
+            abstract_pages = []
+            chapter_pages = []
+            conclusion_pages = []
+
+            for p_lbl, raw_p in page_snippets:
+                p_num = _parse_int(p_lbl)
+                cleaned_p = cls._strip_page_artifacts(raw_p)
+                low_p = cleaned_p.lower()
+                if "abstract" in low_p[:60] and not cls._is_front_matter(cleaned_p):
+                    abstract_pages.append((p_num, cleaned_p))
+                elif not cls._is_front_matter(cleaned_p):
+                    if re.search(r"\b(?:chapter\s*6|6\.1\s+conclusion|conclusion\s+and\s+future)\b", low_p[:140]):
+                        conclusion_pages.append((p_num, cleaned_p))
+                    elif re.search(r"CHAPTER\s+[1-5]\s*:", cleaned_p):
+                        chapter_pages.append((p_num, cleaned_p))
+                    body_pages.append((p_num, cleaned_p))
+
+            if not body_pages and abstract_pages:
+                body_pages = abstract_pages
+            elif not body_pages:
+                body_pages = [(_parse_int(lbl), cls._strip_page_artifacts(txt)) for lbl, txt in page_snippets]
+
+            cited_pages = []
+            sections_md = [
+                f"### Executive Summary: {file_name}",
+                f"This document spans **{len(page_snippets) if page_snippets else 1} pages**. Below is a structured synthesis of its main goals, core topics, and conclusions:"
             ]
 
-            highlights = []
-            for p_label, text in page_snippets[:8]:
-                clean_p = re.sub(r"\s+", " ", text).strip()
-                sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_p) if len(s.strip()) > 30]
-                if sentences:
-                    highlights.append(f"- **Section / Page {p_label}**: {sentences[0]}")
+            # Goals & Purpose
+            goal_sources = abstract_pages[:1] or body_pages[:1]
+            goal_bullets = []
+            for p_num, p_txt in goal_sources:
+                clean_p_txt = re.sub(r"^ABSTRACT\s+", "", p_txt, flags=re.IGNORECASE)
+                for s in cls._clean_sentences(clean_p_txt)[:2]:
+                    goal_bullets.append(f"- {s} [Page {p_num}]")
+                if p_num not in cited_pages:
+                    cited_pages.append(p_num)
+            if goal_bullets:
+                sections_md.append("#### Main Goals & Purpose\n" + "\n".join(goal_bullets))
 
-            if highlights:
-                summary_blocks.append("#### Core Modules & Highlights\n" + "\n".join(highlights))
+            # Core Topics: prefer actual Chapter opening pages first, then sample body evenly
+            if chapter_pages:
+                sampled_topics = chapter_pages[:5]
+            else:
+                topic_pool = [bp for bp in body_pages if bp not in conclusion_pages]
+                if len(topic_pool) > 5:
+                    step = len(topic_pool) / 5
+                    sampled_topics = [topic_pool[int(i * step)] for i in range(5)]
+                else:
+                    sampled_topics = topic_pool[:5]
 
-            summary_blocks.append(f"\n#### Synthesis Verdict\nThe material is comprehensive and structured for rapid learning, synthesis, and technical examination. [Page {found_pages[0] if found_pages else 1}]")
+            topic_bullets = []
+            for p_num, p_txt in sampled_topics:
+                chap_m = cls._CHAP_HEADER_RX.search(p_txt)
+                sub_text = cls._CHAP_HEADER_RX.sub("", p_txt, count=1).strip() if chap_m else p_txt
+                sub_text = cls._SUB_TITLE_RX.sub("", sub_text, count=1).strip()
+                sents = cls._clean_sentences(sub_text) or cls._clean_sentences(p_txt)
+                if not sents:
+                    continue
+                prefix = f"**{chap_m.group(0).strip().title()} (Page {p_num})**: " if chap_m else f"**Page {p_num}**: "
+                topic_bullets.append(f"- {prefix}{sents[0]}")
+                if p_num not in cited_pages:
+                    cited_pages.append(p_num)
+
+            if topic_bullets:
+                sections_md.append("#### Core Topics & Technical Scope\n" + "\n".join(topic_bullets))
+
+            # Conclusions
+            concl_sources = conclusion_pages[:2] or (body_pages[-1:] if len(body_pages) > 1 else [])
+            concl_bullets = []
+            for p_num, p_txt in concl_sources:
+                clean_concl = re.sub(r"^.*?6\.1\s+Conclusion\s+", "", p_txt, flags=re.IGNORECASE)
+                clean_concl = cls._CHAP_HEADER_RX.sub("", clean_concl).strip()
+                sents = cls._clean_sentences(clean_concl) or cls._clean_sentences(p_txt)
+                for s in sents[:2]:
+                    concl_bullets.append(f"- {s} [Page {p_num}]")
+                if p_num not in cited_pages:
+                    cited_pages.append(p_num)
+            if concl_bullets:
+                sections_md.append("#### Key Outcomes & Conclusions\n" + "\n".join(concl_bullets))
 
             return json.dumps({
-                "answer": "\n\n".join(summary_blocks),
-                "cited_pages": found_pages[:4] if found_pages else [1]
+                "answer": "\n\n".join(sections_md),
+                "cited_pages": cited_pages[:8] if cited_pages else [1]
             })
 
-        # 3. Specific Question handling
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", excerpts_text) if len(s.strip()) > 25 and not s.startswith("[Detailed Excerpt")]
+        # 3. Targeted Section / Chapter / Specific Factual Explanation
+        excerpt_items = [(_parse_int(p_lbl), cls._strip_page_artifacts(txt)) for p_lbl, txt in excerpt_blocks if txt.strip()]
+        if not excerpt_items and page_snippets:
+            excerpt_items = [(_parse_int(p_lbl), cls._strip_page_artifacts(txt)) for p_lbl, txt in page_snippets[:3]]
+
+        if has_specific_target and excerpt_items:
+            first_text = excerpt_items[0][1]
+            heading_match = cls._CHAP_HEADER_RX.search(first_text)
+            section_heading = heading_match.group(0).strip().title() if heading_match else user_message.strip().title()
+
+            target_num_m = re.search(r"\b(?:section|chapter|unit|module|part)\s*(\d+)\b", clean_lower)
+            major_prefix = re.escape(target_num_m.group(1)) if target_num_m else r"\d+"
+            sub_finder_rx = re.compile(
+                rf"\b({major_prefix}\.\d+\s+[A-Z][A-Za-z0-9\s,&/-]{{2,65}}?)"
+                r"(?=\s+(?:The|A|An|In|To|For|On|By|As|With|This|These|It|Here|[A-Z][A-Za-z0-9-]*\s+(?!(?:and|or|of|to|the|for|in|on|with|via|by|using|from)\s+[A-Z])[a-z]{2,})\b)"
+            )
+
+            bullet_lines = []
+            cited_pages = []
+            for p_num, p_txt in excerpt_items[:5]:
+                cleaned_block = cls._CHAP_HEADER_RX.sub("", p_txt).strip()
+                sub_match = sub_finder_rx.search(cleaned_block)
+                sub_label = f"{sub_match.group(1).strip()} (Page {p_num})" if sub_match else f"Page {p_num}"
+                body_only = cls._SUB_TITLE_RX.sub("", cleaned_block, count=1).strip()
+                sents = cls._clean_sentences(body_only) or cls._clean_sentences(cleaned_block, require_capital=False, require_punct_end=False)
+                if sents:
+                    excerpt_summary = " ".join(sents[:2])
+                    bullet_lines.append(f"- **{sub_label}**: {excerpt_summary} [Page {p_num}]")
+                    if p_num not in cited_pages:
+                        cited_pages.append(p_num)
+
+            if bullet_lines:
+                answer_md = f"### {section_heading}\n\n" + "\n\n".join(bullet_lines)
+                return json.dumps({
+                    "answer": answer_md,
+                    "cited_pages": cited_pages or [excerpt_items[0][0]]
+                })
+
+        # General specific factual question
         query_terms = [w for w in clean_words if len(w) > 3]
-        matched_sentences = []
-        for sent in sentences:
-            sent_lower = sent.lower()
-            if any(term in sent_lower for term in query_terms):
-                matched_sentences.append(sent)
+        scored_sentences = []
+        for p_num, p_txt in excerpt_items:
+            for sent in cls._clean_sentences(p_txt):
+                sent_lower = sent.lower()
+                overlap = sum(1 for term in query_terms if term in sent_lower)
+                scored_sentences.append((overlap, p_num, sent))
 
-        if not matched_sentences:
-            matched_sentences = sentences[:3]
+        scored_sentences.sort(key=lambda item: item[0], reverse=True)
+        chosen = [item for item in scored_sentences if item[0] > 0][:4] or scored_sentences[:3]
 
-        cited_p = found_pages[:2] if found_pages else [1]
-        page_ref = f"[Page {cited_p[0]}]" if cited_p else ""
-        answer_body = " ".join(matched_sentences[:4]) if matched_sentences else f"Based on the analysis of **{file_name}**, the file provides detailed technical documentation on this subject."
+        cited_pages = []
+        formatted_points = []
+        for _, p_num, sent in chosen:
+            formatted_points.append(f"{sent} [Page {p_num}]")
+            if p_num not in cited_pages:
+                cited_pages.append(p_num)
 
+        answer_body = "\n\n".join(formatted_points) if formatted_points else f"Based on **{file_name}**, the retrieved excerpts cover this topic directly."
         return json.dumps({
-            "answer": f"{answer_body} {page_ref}".strip(),
-            "cited_pages": cited_p
+            "answer": answer_body,
+            "cited_pages": cited_pages or [1]
         })
 
 async def ask_tokenbrief(

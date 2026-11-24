@@ -1,3 +1,4 @@
+import re
 import uuid
 import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -117,6 +118,120 @@ async def _bg_increment_cache_hit(record_id: int) -> None:
         pass
 
 
+_WORD_NUMBERS = {
+    "one": "1", "first": "1", "two": "2", "second": "2", "three": "3", "third": "3",
+    "four": "4", "fourth": "4", "five": "5", "fifth": "5", "six": "6", "sixth": "6",
+    "seven": "7", "seventh": "7", "eight": "8", "eighth": "8", "nine": "9", "ninth": "9",
+    "ten": "10", "tenth": "10",
+}
+
+
+def _is_toc_or_list_page(text: str) -> bool:
+    head = clean_text(text)[:180].lower()
+    return any(tok in head for tok in ("table of contents", "list of figures", "list of tables", "list of abbreviations"))
+
+
+def _extract_targeted_section_chunks(
+    message_text: str,
+    all_file_chunks: List[dict],
+    active_filename: str,
+) -> Optional[List[dict]]:
+    if not all_file_chunks:
+        return None
+
+    lower_q = (message_text or "").lower().strip()
+    for word, digit in _WORD_NUMBERS.items():
+        lower_q = re.sub(rf"\b{word}\b", digit, lower_q)
+
+    def _to_candidate(chunk: dict, score: float = 98.0) -> dict:
+        return {
+            "chunk_id": chunk["chunk_id"],
+            "document_id": chunk["document_id"],
+            "document_filename": active_filename,
+            "source_page_number": chunk["page"],
+            "chunk_text_content": chunk["text"],
+            "similarity_percentage": score,
+            "rerank_score": score,
+        }
+
+    # 1. Explicit page request ("page 35", "page one")
+    page_match = re.search(r"\bpage\s*(\d+)\b", lower_q)
+    if page_match:
+        target_page = int(page_match.group(1))
+        matched = [c for c in all_file_chunks if c["page"] in (target_page, target_page + 1)]
+        if matched:
+            return [_to_candidate(c, 99.0 if c["page"] == target_page else 92.0) for c in matched[:5]]
+
+    # 2. Explicit chapter/section/unit/subsection request ("section 4", "chapter 4", "4.2")
+    sec_match = re.search(r"\b(?:chapter|section|unit|module|part)\s*(\d+(?:\.\d+)?)\b", lower_q)
+    if not sec_match:
+        sec_match = re.search(r"\b(\d+\.\d+)\b", lower_q)
+
+    if sec_match:
+        target_num = sec_match.group(1)
+        major_num = target_num.split(".")[0]
+        is_sub = "." in target_num
+
+        body_indices = [i for i, c in enumerate(all_file_chunks) if not _is_toc_or_list_page(c["text"])]
+        start_idx = None
+
+        # Pass 1: exact Chapter/Section heading (ignore Organisation-of-Report / TOC lists mentioning multiple chapters)
+        for idx in body_indices:
+            cleaned = clean_text(all_file_chunks[idx]["text"])
+            low_c = cleaned.lower()
+            if is_sub:
+                if re.search(rf"(?:^|\s){re.escape(target_num)}\s+[A-Za-z]", cleaned):
+                    start_idx = idx
+                    break
+            else:
+                has_header = bool(
+                    re.search(rf"\b(?:chapter|section|unit|module)\s*{re.escape(major_num)}\s*:", cleaned, re.IGNORECASE)
+                )
+                is_multi_chapter_summary = sum(1 for k in range(1, 7) if f"chapter {k}" in low_c) >= 3
+                if has_header and not is_multi_chapter_summary:
+                    start_idx = idx
+                    break
+
+        # Pass 2: fallback to first subsection N.1 or N.x inside body
+        if start_idx is None and not is_sub:
+            for idx in body_indices:
+                cleaned = clean_text(all_file_chunks[idx]["text"])
+                if re.search(rf"(?:^|\s){re.escape(major_num)}\.1\s+[A-Za-z]", cleaned):
+                    start_idx = idx
+                    break
+
+        # Pass 3: broader "Chapter N" / "Section N" match if no colon heading was found
+        if start_idx is None and not is_sub:
+            for idx in body_indices:
+                cleaned = clean_text(all_file_chunks[idx]["text"])
+                low_c = cleaned.lower()
+                is_multi_chapter_summary = sum(1 for k in range(1, 7) if f"chapter {k}" in low_c) >= 3
+                if not is_multi_chapter_summary and re.search(rf"\b(?:chapter|section|unit|module)\s*{re.escape(major_num)}\b", cleaned, re.IGNORECASE):
+                    start_idx = idx
+                    break
+
+        if start_idx is not None:
+            collected = []
+            next_chapter_num = str(int(major_num) + 1) if major_num.isdigit() else None
+            for idx in range(start_idx, min(start_idx + 6, len(all_file_chunks))):
+                chunk_clean = clean_text(all_file_chunks[idx]["text"])
+                if idx > start_idx and next_chapter_num and not is_sub:
+                    if re.search(rf"\b(?:chapter|unit)\s*{next_chapter_num}\b[:\s]", chunk_clean, re.IGNORECASE):
+                        break
+                collected.append(_to_candidate(all_file_chunks[idx], round(99.0 - len(collected) * 1.5, 1)))
+            if collected:
+                return collected
+
+    # 3. Abstract / Conclusion direct lookup
+    if "conclusion" in lower_q and not any(k in lower_q for k in ("summary", "summarize", "overview", "goals")):
+        for idx, c in enumerate(all_file_chunks):
+            if not _is_toc_or_list_page(c["text"]) and re.search(r"\b(?:chapter\s*6|6\.1\s+conclusion|conclusion)\b", clean_text(c["text"]), re.IGNORECASE):
+                end_idx = min(idx + 3, len(all_file_chunks))
+                return [_to_candidate(all_file_chunks[j], 97.0 - (j - idx)) for j in range(idx, end_idx)]
+
+    return None
+
+
 async def _execute_unified_qa(
     message_text: str,
     target_doc_id: Optional[int],
@@ -204,8 +319,16 @@ async def _execute_unified_qa(
         for c in all_chunk_records
     ]
 
-    # 3. For small single-document queries (<= 5 chunks), rank directly in-memory without redundant DB queries
-    if target_doc_id and 0 < len(all_file_chunks) <= 5:
+    # 3. Structural section/chapter/page targeted lookup first (fast in-memory, skips TOC/lists)
+    targeted_chunks = _extract_targeted_section_chunks(
+        message_text=message_text,
+        all_file_chunks=all_file_chunks,
+        active_filename=active_filename,
+    )
+
+    if targeted_chunks:
+        matched_chunks = targeted_chunks
+    elif target_doc_id and 0 < len(all_file_chunks) <= 5:
         in_memory_candidates = [
             {
                 "chunk_id": c["chunk_id"],
