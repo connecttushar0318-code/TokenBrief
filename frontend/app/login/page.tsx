@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
@@ -46,6 +46,51 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [sandboxOtp, setSandboxOtp] = useState<string | null>(null);
 
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/health`).catch(() => {});
+  }, []);
+
+  const persistAuthSession = (data: any, fallbackIdentifier?: string) => {
+    if (data.access_token) {
+      const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
+      document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
+      localStorage.setItem("access_token", data.access_token);
+      if (data.refresh_token) {
+        localStorage.setItem("refresh_token", data.refresh_token);
+      }
+      const userName = data.username || (fallbackIdentifier && !fallbackIdentifier.includes("@") ? fallbackIdentifier : undefined);
+      if (userName || data.email) {
+        localStorage.setItem("tokenbrief_user", JSON.stringify({
+          username: userName || "User",
+          email: data.email || (fallbackIdentifier?.includes("@") ? fallbackIdentifier : ""),
+        }));
+      }
+    }
+  };
+
+  const fetchWithWakeRetry = async (url: string, init: RequestInit, maxAttempts = 3): Promise<Response> => {
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(url, init);
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxAttempts) {
+          setSuccessMsg("Waking up cloud server... Retrying automatically.");
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+        return res;
+      } catch (err: any) {
+        lastError = err;
+        if (attempt < maxAttempts) {
+          setSuccessMsg("Connecting to cloud server... Retrying automatically.");
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+      }
+    }
+    throw lastError || new TypeError("Failed to fetch");
+  };
+
   const resetMessages = () => {
     setError(null);
     setSuccessMsg(null);
@@ -71,7 +116,7 @@ export default function LoginPage() {
           throw new Error(validation.error.errors[0]?.message);
         }
 
-        const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        const res = await fetchWithWakeRetry(`${API_BASE_URL}/api/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -101,18 +146,7 @@ export default function LoginPage() {
           throw new Error(errorMsg);
         }
 
-        if (data.access_token) {
-          const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
-          document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
-          localStorage.setItem("access_token", data.access_token);
-          if (data.username) {
-            localStorage.setItem("tokenbrief_user", JSON.stringify({
-              username: data.username,
-              email: data.email,
-            }));
-          }
-        }
-
+        persistAuthSession(data, formData.username.trim());
         window.location.href = "/dashboard";
       } else if (mode === "register") {
         const validation = registrationSchema.safeParse({
@@ -124,7 +158,7 @@ export default function LoginPage() {
           throw new Error(validation.error.errors[0]?.message);
         }
 
-        const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
+        const res = await fetchWithWakeRetry(`${API_BASE_URL}/api/auth/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -158,7 +192,7 @@ export default function LoginPage() {
           throw new Error("Please enter a valid 6-digit OTP code");
         }
 
-        const res = await fetch(`${API_BASE_URL}/api/auth/verify-email`, {
+        const res = await fetchWithWakeRetry(`${API_BASE_URL}/api/auth/verify-email`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -173,18 +207,7 @@ export default function LoginPage() {
           throw new Error(data.detail || "Invalid or expired OTP");
         }
 
-        if (data.access_token) {
-          const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
-          document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
-          localStorage.setItem("access_token", data.access_token);
-          if (data.username) {
-            localStorage.setItem("tokenbrief_user", JSON.stringify({
-              username: data.username,
-              email: data.email,
-            }));
-          }
-        }
-
+        persistAuthSession(data, formData.email.trim());
         window.location.href = "/dashboard";
       } else if (mode === "forgot_password") {
         if (!formData.email.trim()) {

@@ -76,7 +76,7 @@ async def get_authenticated_user(
 
     query = select(UserAccount).where(UserAccount.username == username)
     result = await database_session.execute(query)
-    user = result.scalar_one_or_none()
+    user = result.scalars().first()
     if not user:
         raise unauthorized
 
@@ -101,4 +101,4 @@ async def get_optional_authenticated_user(
 
     query = select(UserAccount).where(UserAccount.username == username)
     result = await database_session.execute(query)
-    return result.scalar_one_or_none()
+    return result.scalars().first()

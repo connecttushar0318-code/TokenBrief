@@ -35,7 +35,7 @@ class ConfigurationSettings:
         "b71c265324df504938637c358042fa2277dca08dbca645001ff2a5f64d0846be"
     )
     security_algorithm_name: str = os.environ.get("ALGORITHM", "HS256")
-    access_token_expire_minutes: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+    access_token_expire_minutes: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
     refresh_token_expire_days: int = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
     embedding_model_name: str = os.environ.get("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
     document_upload_directory: str = os.environ.get("UPLOAD_DIR", "uploads")

@@ -47,31 +47,49 @@ export function DocumentUploadCard({ onUploadSuccess }: { onUploadSuccess?: () =
         setSelectedFileName(
           validFiles.length === 1 ? file.name : `${file.name} (${index + 1}/${validFiles.length})`
         );
-        const formData = new FormData();
-        formData.append("uploaded_file", file);
 
         try {
-          const headers: Record<string, string> = {};
-          if (typeof window !== "undefined") {
-            const token = localStorage.getItem("access_token");
-            if (token) headers["Authorization"] = `Bearer ${token}`;
+          const uploadAttempt = async () => {
+            const fd = new FormData();
+            fd.append("uploaded_file", file);
+            const headers: Record<string, string> = {};
+            if (typeof window !== "undefined") {
+              const token = localStorage.getItem("access_token");
+              if (token) headers["Authorization"] = `Bearer ${token}`;
+            }
+            return fetch(`${API_BASE_URL}/api/documents/upload`, {
+              method: "POST",
+              headers,
+              body: fd,
+              credentials: "include",
+            });
+          };
+
+          let response: Response;
+          try {
+            response = await uploadAttempt();
+            if (response.status === 502 || response.status === 503 || response.status === 504) {
+              await new Promise((r) => setTimeout(r, 4000));
+              response = await uploadAttempt();
+            }
+          } catch {
+            await new Promise((r) => setTimeout(r, 4000));
+            response = await uploadAttempt();
           }
-          const response = await fetch(`${API_BASE_URL}/api/documents/upload`, {
-            method: "POST",
-            headers,
-            body: formData,
-            credentials: "include",
-          });
 
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || "The server could not add this file.");
+            throw new Error(errorData.detail || `Server returned ${response.status}. Please try again in a few seconds.`);
           }
 
           await response.json();
           uploadedCount += 1;
         } catch (err: any) {
-          uploadErrors.push(`${file.name}: ${err.message || "The file could not be uploaded."}`);
+          const msg =
+            err?.name === "TypeError" && (err?.message === "Failed to fetch" || err?.message?.includes("fetch"))
+              ? "Could not reach cloud server (waking from idle). Please wait 15 seconds and retry."
+              : err?.message || "The file could not be uploaded.";
+          uploadErrors.push(`${file.name}: ${msg}`);
         }
       }
 

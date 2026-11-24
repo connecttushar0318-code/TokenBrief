@@ -1,11 +1,11 @@
 import uuid
 import time
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, delete, func
 from typing import Optional, List
 from config import settings
-from database import get_database_session
+from database import get_database_session, database_session_factory
 from models import (
     UserAccount,
     DocumentRecord,
@@ -29,11 +29,14 @@ from schemas import (
 )
 from security import get_optional_authenticated_user, get_authenticated_user
 from services.search_service import VectorSimilaritySearchEngine
+from services.rerank_service import CandidateRerankerService
+from services.embedding_service import VectorEmbeddingGenerator
 from services.qa_service import (
     DocumentQuestionAnsweringService,
     ask_tokenbrief,
     clean_text,
     build_full_file_digest,
+    is_pure_greeting,
     LLMClient
 )
 from services.cache_service import SemanticQueryCacheService
@@ -60,33 +63,136 @@ def _can_use_document_cache(
         return False
     return all(chunk.get("document_id") == document_id for chunk in matched_chunks)
 
+async def _bg_record_query_log(
+    question_text: str,
+    latency_ms: float,
+    cache_hit: bool,
+    model_used: str,
+    estimated_token_count: int,
+    user_id: Optional[int],
+    document_id: Optional[int],
+) -> None:
+    try:
+        async with database_session_factory() as bg_session:
+            await AnalyticsDashboardService.record_query_log(
+                database_session=bg_session,
+                question_text=question_text,
+                latency_ms=latency_ms,
+                cache_hit=cache_hit,
+                model_used=model_used,
+                estimated_token_count=estimated_token_count,
+                user_id=user_id,
+                document_id=document_id,
+            )
+    except Exception:
+        pass
+
+
+async def _bg_store_semantic_cache(
+    query_text: str,
+    query_vector: List[float],
+    answer_text: str,
+    sources: list,
+    document_id: int,
+) -> None:
+    try:
+        async with database_session_factory() as bg_session:
+            await SemanticQueryCacheService.store_query_cache(
+                database_session=bg_session,
+                query_text=query_text,
+                query_vector=query_vector,
+                answer_text=answer_text,
+                sources=sources,
+                document_id=document_id,
+            )
+    except Exception:
+        pass
+
+
+async def _bg_increment_cache_hit(record_id: int) -> None:
+    try:
+        async with database_session_factory() as bg_session:
+            await SemanticQueryCacheService.increment_hit_count(bg_session, record_id)
+    except Exception:
+        pass
+
+
 async def _execute_unified_qa(
     message_text: str,
     target_doc_id: Optional[int],
     user_id: Optional[int],
     user_doc_inventory: List[dict],
-    database_session: AsyncSession
+    database_session: AsyncSession,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> tuple:
     active_filename = "Workspace Documents"
+    effective_doc_id = target_doc_id
     if target_doc_id:
         match_doc = next((d for d in user_doc_inventory if d["id"] == target_doc_id), None)
         if match_doc:
             active_filename = match_doc["filename"]
     elif user_doc_inventory:
         active_filename = user_doc_inventory[0]["filename"]
+        effective_doc_id = user_doc_inventory[0]["id"]
 
-    # 1. Fetch all chunks of the document/workspace for full_file_digest
-    chunks_query = select(DocumentChunkRecord)
+    # 0. Fast-path pure greetings (zero DB chunk scans, zero embeddings, zero LLM wait)
+    if is_pure_greeting(message_text):
+        result = await ask_tokenbrief(
+            user_message=message_text,
+            file_name=active_filename,
+            all_file_chunks=[],
+            top_k_chunks=[],
+            llm_client=LLMClient
+        )
+        return result, [], [], False
+
+    query_vector = VectorEmbeddingGenerator.generate_single_embedding(message_text)
+
+    # 1. Semantic cache lookup when scoped to a concrete document (L1 in-memory first, L2 pgvector fallback)
+    if effective_doc_id is not None:
+        try:
+            cached = await SemanticQueryCacheService.get_cached_answer(
+                database_session=database_session,
+                query_vector=query_vector,
+                filter_document_id=effective_doc_id,
+                defer_hit_update=True,
+            )
+            if cached and cached.get("answer"):
+                if background_tasks is not None and cached.get("record_id"):
+                    background_tasks.add_task(_bg_increment_cache_hit, int(cached["record_id"]))
+                cached_sources = [
+                    SourceReferenceChunk(
+                        chunk_id=int(s.get("chunk_id", 0)),
+                        document_id=int(s.get("document_id", effective_doc_id)),
+                        document_filename=str(s.get("document_filename", active_filename)),
+                        source_page_number=s.get("source_page_number"),
+                        chunk_text_content=str(s.get("chunk_text_content", "")),
+                        similarity_percentage=float(s.get("similarity_percentage", 95.0)),
+                        rerank_score=s.get("rerank_score")
+                    )
+                    for s in cached.get("sources", [])
+                ]
+                return {"answer": cached["answer"], "cited_pages": []}, cached_sources, query_vector, True
+        except Exception:
+            pass
+
+    # 2. Fetch ONLY lightweight text columns (skip transferring huge 384-float vectors over wire)
+    chunks_query = select(
+        DocumentChunkRecord.id,
+        DocumentChunkRecord.document_id,
+        DocumentChunkRecord.source_page_number,
+        DocumentChunkRecord.chunk_text_content,
+    )
     if target_doc_id:
         chunks_query = chunks_query.where(DocumentChunkRecord.document_id == target_doc_id)
     elif user_doc_inventory:
         chunks_query = chunks_query.where(DocumentChunkRecord.document_id == user_doc_inventory[0]["id"])
     else:
-        chunks_query = chunks_query.limit(200)
+        chunks_query = chunks_query.limit(120)
 
-    chunks_query = chunks_query.order_by(DocumentChunkRecord.source_page_number, DocumentChunkRecord.chunk_index_number).limit(300)
+    chunks_query = chunks_query.order_by(DocumentChunkRecord.source_page_number, DocumentChunkRecord.chunk_index_number).limit(150)
     chunks_result = await database_session.execute(chunks_query)
-    all_chunk_records = chunks_result.scalars().all()
+    all_chunk_records = chunks_result.all()
 
     all_file_chunks = [
         {
@@ -98,14 +204,32 @@ async def _execute_unified_qa(
         for c in all_chunk_records
     ]
 
-    # 2. Retrieve Top-K chunks via Vector Similarity Search (no 25% similarity threshold blocker)
-    matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
-        database_session=database_session,
-        user_query_text=message_text,
-        filter_document_id=target_doc_id,
-        filter_user_id=user_id,
-        maximum_results_count=5
-    )
+    # 3. For small single-document queries (<= 5 chunks), rank directly in-memory without redundant DB queries
+    if target_doc_id and 0 < len(all_file_chunks) <= 5:
+        in_memory_candidates = [
+            {
+                "chunk_id": c["chunk_id"],
+                "document_id": c["document_id"],
+                "document_filename": active_filename,
+                "source_page_number": c["page"],
+                "chunk_text_content": c["text"],
+                "similarity_percentage": 85.0,
+            }
+            for c in all_file_chunks
+        ]
+        matched_chunks = CandidateRerankerService.rerank_chunks(
+            query_text=message_text,
+            retrieved_chunks=in_memory_candidates,
+            top_k=5,
+        )
+    else:
+        matched_chunks, query_vector = await VectorSimilaritySearchEngine.find_most_relevant_chunks(
+            database_session=database_session,
+            user_query_text=message_text,
+            filter_document_id=target_doc_id,
+            filter_user_id=user_id,
+            maximum_results_count=5
+        )
 
     top_k_chunks = [
         {
@@ -120,7 +244,7 @@ async def _execute_unified_qa(
         for c in matched_chunks
     ]
 
-    # 3. Call the single unified function: ask_tokenbrief
+    # 4. Call the single unified function: ask_tokenbrief
     result = await ask_tokenbrief(
         user_message=message_text,
         file_name=active_filename,
@@ -129,7 +253,7 @@ async def _execute_unified_qa(
         llm_client=LLMClient
     )
 
-    # 4. Build sources ONLY from pages the AI actually used (empty [] for greetings like "hlo" / "hola"!)
+    # 5. Build sources ONLY from pages the AI actually used
     sources = []
     cited_pages = set(result.get("cited_pages", []))
     if cited_pages:
@@ -150,11 +274,32 @@ async def _execute_unified_qa(
                     )
                 )
 
-    return result, sources, query_vector
+    # 6. Store in semantic cache asynchronously (updates L1 immediately inside helper or background task)
+    if effective_doc_id is not None and result.get("answer") and all_file_chunks:
+        serializable_sources = [s.model_dump() for s in sources]
+        SemanticQueryCacheService._save_to_l1(
+            document_id=effective_doc_id,
+            query_text=message_text,
+            query_vector=query_vector,
+            answer_text=result["answer"],
+            sources=serializable_sources,
+        )
+        if background_tasks is not None:
+            background_tasks.add_task(
+                _bg_store_semantic_cache,
+                message_text,
+                query_vector,
+                result["answer"],
+                serializable_sources,
+                effective_doc_id,
+            )
+
+    return result, sources, query_vector, False
 
 @router.post("/ask", response_model=AnswerWithSourcesResponse)
 async def ask_document_question(
     question_payload: QuestionQueryRequest,
+    background_tasks: BackgroundTasks,
     database_session: AsyncSession = Depends(get_database_session),
     optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
 ):
@@ -174,35 +319,33 @@ async def ask_document_question(
             for row in inventory_result.all()
         ]
 
-        result, sources, query_vector = await _execute_unified_qa(
+        result, sources, query_vector, is_cache_hit = await _execute_unified_qa(
             message_text=question_payload.question_text,
             target_doc_id=target_doc_id,
             user_id=user_identifier_id,
             user_doc_inventory=user_doc_inventory,
-            database_session=database_session
+            database_session=database_session,
+            background_tasks=background_tasks,
         )
 
         latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-        active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Unified Engine"
-        try:
-            await AnalyticsDashboardService.record_query_log(
-                database_session=database_session,
-                question_text=question_payload.question_text,
-                latency_ms=latency_ms,
-                cache_hit=False,
-                model_used=active_model,
-                estimated_token_count=max(15, (len(question_payload.question_text) + len(result["answer"])) // 4),
-                user_id=user_identifier_id,
-                document_id=target_doc_id
-            )
-        except Exception:
-            pass
+        active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key not in LLMClient._invalid_keys) else "TokenBrief Unified Engine"
+        background_tasks.add_task(
+            _bg_record_query_log,
+            question_payload.question_text,
+            latency_ms,
+            is_cache_hit,
+            active_model,
+            max(15, (len(question_payload.question_text) + len(result["answer"])) // 4),
+            user_identifier_id,
+            target_doc_id,
+        )
 
         return AnswerWithSourcesResponse(
             question_text=question_payload.question_text,
             generated_answer=result["answer"],
             source_chunks=sources,
-            cache_hit=False
+            cache_hit=is_cache_hit
         )
 
     except ValueError as validation_error:
@@ -219,6 +362,7 @@ async def ask_document_question(
 @router.post("/quick-chat", response_model=QuickChatResponse)
 async def convenient_quick_chat(
     payload: QuickChatRequest,
+    background_tasks: BackgroundTasks,
     database_session: AsyncSession = Depends(get_database_session),
     optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
 ):
@@ -236,12 +380,13 @@ async def convenient_quick_chat(
         for row in inventory_result.all()
     ]
 
-    result, sources, query_vector = await _execute_unified_qa(
+    result, sources, query_vector, is_cache_hit = await _execute_unified_qa(
         message_text=payload.message_text,
         target_doc_id=target_doc_id,
         user_id=user_id,
         user_doc_inventory=user_doc_inventory,
-        database_session=database_session
+        database_session=database_session,
+        background_tasks=background_tasks,
     )
 
     answer_text = result["answer"]
@@ -254,26 +399,23 @@ async def convenient_quick_chat(
     SESSION_MEMORY_BUFFER[session_id] = history_records
 
     latency_ms = (time.perf_counter() - start_execution_time) * 1000.0
-    active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy")) else "TokenBrief Unified Engine"
-    try:
-        await AnalyticsDashboardService.record_query_log(
-            database_session=database_session,
-            question_text=payload.message_text,
-            latency_ms=latency_ms,
-            cache_hit=False,
-            model_used=active_model,
-            estimated_token_count=max(15, (len(payload.message_text) + len(answer_text)) // 4),
-            user_id=user_id,
-            document_id=target_doc_id
-        )
-    except Exception:
-        pass
+    active_model = settings.gemini_model_name if (settings.gemini_api_key and settings.gemini_api_key not in LLMClient._invalid_keys) else "TokenBrief Unified Engine"
+    background_tasks.add_task(
+        _bg_record_query_log,
+        payload.message_text,
+        latency_ms,
+        is_cache_hit,
+        active_model,
+        max(15, (len(payload.message_text) + len(answer_text)) // 4),
+        user_id,
+        target_doc_id,
+    )
 
     return QuickChatResponse(
         session_id=session_id,
         answer=answer_text,
         sources=sources,
-        cache_hit=False
+        cache_hit=is_cache_hit
     )
 
 @router.get("/cache/stats")
@@ -293,6 +435,7 @@ async def get_semantic_cache_statistics(
 async def clear_semantic_cache(
     database_session: AsyncSession = Depends(get_database_session)
 ):
+    SemanticQueryCacheService.clear_memory_cache()
     await database_session.execute(delete(SemanticQueryCacheRecord))
     await database_session.commit()
     return GenericMessageResponse(message="Semantic cache cleared successfully")

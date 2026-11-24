@@ -4,11 +4,11 @@ import uuid
 import shutil
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from config import settings
-from database import get_database_session
+from database import get_database_session, database_session_factory
 from models import DocumentRecord, DocumentChunkRecord, UserAccount
 from schemas import (
     DocumentMetadataResponse,
@@ -23,12 +23,26 @@ from services.embedding_service import VectorEmbeddingGenerator
 from services.qa_service import DocumentQuestionAnsweringService
 from services.comparison_service import DocumentComparisonService
 from services.hierarchical_service import HierarchicalDocumentSummaryService
+from services.cache_service import SemanticQueryCacheService
 from google import genai
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
+async def _index_document_sections_background(document_id: int) -> None:
+    try:
+        async with database_session_factory() as bg_session:
+            await HierarchicalDocumentSummaryService.index_document_sections(
+                document_id=document_id,
+                database_session=bg_session,
+                batch_size=5
+            )
+    except Exception:
+        pass
+
+
 @router.post("/upload", response_model=DocumentMetadataResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document_file(
+    background_tasks: BackgroundTasks,
     uploaded_file: UploadFile = File(...),
     database_session: AsyncSession = Depends(get_database_session),
     optional_user_account: Optional[UserAccount] = Depends(get_optional_authenticated_user)
@@ -93,7 +107,7 @@ async def upload_document_file(
             destination_file_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No readable text could be extracted from the uploaded document"
+                detail="No selectable text could be extracted from this file. Scanned image-only PDFs are not supported without OCR."
             )
 
         generated_chunks = DocumentTextChunker.split_pages_into_chunks(
@@ -142,14 +156,7 @@ async def upload_document_file(
         await database_session.commit()
         await database_session.refresh(document_record)
 
-        try:
-            await HierarchicalDocumentSummaryService.index_document_sections(
-                document_id=document_record.id,
-                database_session=database_session,
-                batch_size=5
-            )
-        except Exception:
-            pass
+        background_tasks.add_task(_index_document_sections_background, document_record.id)
 
         return document_record
 
@@ -233,14 +240,6 @@ async def generate_document_summary(
         topics=hierarchical_data["topics"]
     )
 
-    return DocumentSummaryResponse(
-        document_id=document.id,
-        filename=document.filename,
-        executive_summary=summary_text,
-        key_takeaways=takeaways or ["Comprehensive domain overview indexed in knowledge base"],
-        topics=topics or ["General", "Analysis", "Data", "Knowledge"]
-    )
-
 @router.post("/compare", response_model=DocumentComparisonResponse)
 async def compare_multiple_documents(
     comparison_request: DocumentComparisonRequest,
@@ -286,4 +285,5 @@ async def delete_document_by_id(
 
     await database_session.delete(target_document)
     await database_session.commit()
+    SemanticQueryCacheService.clear_memory_cache(document_id)
     return None

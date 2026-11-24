@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from typing import List, Dict, Any, Optional
@@ -52,28 +53,76 @@ def build_full_file_digest(chunks: List[Dict]) -> str:
 
     return "\n\n".join(digest_lines)
 
+_GREETING_TOKENS = {
+    "hlo", "helo", "hello", "hi", "hey", "hola", "namaste", "sup", "yo",
+    "morning", "afternoon", "evening", "thanks", "thank"
+}
+_NON_GREETING_INTENTS = {
+    "summarize", "summerize", "summary", "explain", "about", "what", "why",
+    "how", "marks", "cgpa", "skills", "projects", "weka", "data", "page",
+    "unit", "chapter", "compare", "list", "describe", "tell"
+}
+
+def is_pure_greeting(message: str) -> bool:
+    clean_lower = (message or "").lower().strip()
+    if not clean_lower or len(clean_lower) > 40:
+        return False
+    clean_words = set(re.findall(r"\b\w+\b", clean_lower))
+    if any(k in clean_lower for k in _NON_GREETING_INTENTS):
+        return False
+    exact_greetings = {
+        "hlo", "helo", "hello", "hey", "hi", "hola", "how are you",
+        "who are you", "what are you doing", "what's up", "namaste", "thanks", "thank you"
+    }
+    if clean_lower in exact_greetings:
+        return True
+    return len(clean_words) <= 4 and bool(clean_words.intersection(_GREETING_TOKENS))
+
+
 class LLMClient:
+    _cached_client = None
+    _cached_key: Optional[str] = None
+    _invalid_keys: set = set()
+
+    @classmethod
+    def _get_client(cls, api_key: str):
+        if cls._cached_client is None or cls._cached_key != api_key:
+            cls._cached_client = genai.Client(api_key=api_key)
+            cls._cached_key = api_key
+        return cls._cached_client
+
     @classmethod
     async def generate_text(cls, prompt: str, temperature: float = 0.2) -> str:
-        """Invokes Gemini models cascade with automatic fallback to local neural synthesis."""
-        if settings.gemini_api_key:
-            candidate_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        """Invokes fast Gemini Flash models first with cached key validation and local fallback."""
+        api_key = (settings.gemini_api_key or "").strip()
+        if api_key and api_key not in cls._invalid_keys:
+            preferred = settings.gemini_model_name or "gemini-2.5-flash"
+            candidate_models = list(dict.fromkeys([
+                preferred if "pro" not in preferred else "gemini-2.5-flash",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+            ]))
+            client = cls._get_client(api_key)
             for model_name in candidate_models:
                 try:
-                    client = genai.Client(api_key=settings.gemini_api_key)
-                    response = await client.aio.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            temperature=temperature,
-                            response_mime_type="application/json"
-                        )
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                temperature=temperature,
+                                response_mime_type="application/json"
+                            )
+                        ),
+                        timeout=12.0,
                     )
                     if response.text and len(response.text.strip()) > 5:
                         return response.text.strip()
                 except Exception as e:
                     err_msg = str(e)
-                    if "UNAUTHENTICATED" in err_msg or "API key not valid" in err_msg:
+                    if "UNAUTHENTICATED" in err_msg or "API key not valid" in err_msg or "API_KEY_INVALID" in err_msg:
+                        cls._invalid_keys.add(api_key)
                         break
                     continue
 
@@ -176,6 +225,17 @@ async def ask_tokenbrief(
     - Full 4-to-50 page PDF & Video summaries -> Uses full_file_digest so zero pages are missed.
     - Specific factual questions -> Uses top_k_chunks + full_file_digest with exact citations.
     """
+    if is_pure_greeting(user_message):
+        return {
+            "answer": (
+                f"Hello! 👋 I am **TokenBrief AI**, your intelligent document and video assistant. "
+                f"**{file_name}** is loaded and ready to explore in depth. You can ask me to summarize "
+                f"the core topics, explain specific concepts, or find detailed metrics across your files!"
+            ),
+            "sources": [],
+            "cited_pages": []
+        }
+
     # 1. Always build the whole-file view + detailed chunks view
     full_file_digest = build_full_file_digest(all_file_chunks)
     detailed_matches = "\n\n".join(

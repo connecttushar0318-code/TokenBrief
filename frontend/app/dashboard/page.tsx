@@ -436,7 +436,30 @@ export default function DashboardPage() {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  const fetchCurrentUser = async () => {
+  const trySilentRefresh = async (): Promise<boolean> => {
+    try {
+      const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
+      if (!refreshToken) return false;
+      const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.access_token) {
+        const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
+        document.cookie = `access_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax${isSecure ? "; Secure" : ""}`;
+        localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  const fetchCurrentUser = async (retryOnWake = true) => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
         headers: getAuthHeaders(),
@@ -446,15 +469,39 @@ export default function DashboardPage() {
         const data = await response.json();
         setCurrentUser(data.username || "tushar");
         setUserData(data);
+        localStorage.setItem("tokenbrief_user", JSON.stringify({
+          username: data.username,
+          email: data.email_address,
+        }));
       } else if (response.status === 401) {
+        const refreshed = await trySilentRefresh();
+        if (refreshed) {
+          const retryRes = await fetch(`${API_BASE_URL}/api/auth/me`, {
+            headers: getAuthHeaders(),
+            credentials: "include",
+          });
+          if (retryRes.ok) {
+            const data = await retryRes.json();
+            setCurrentUser(data.username || "tushar");
+            setUserData(data);
+            return;
+          }
+        }
         document.cookie = "access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
         localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
         window.location.href = "/login";
+      } else if ((response.status === 502 || response.status === 503 || response.status === 504) && retryOnWake) {
+        setTimeout(() => void fetchCurrentUser(false), 4000);
       }
-    } catch {}
+    } catch {
+      if (retryOnWake) {
+        setTimeout(() => void fetchCurrentUser(false), 4000);
+      }
+    }
   };
 
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (retryOnWake = true) => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/documents`, {
         headers: getAuthHeaders(),
@@ -462,8 +509,14 @@ export default function DashboardPage() {
       });
       if (response.ok) {
         setDocuments(await response.json());
+      } else if ((response.status === 502 || response.status === 503 || response.status === 504) && retryOnWake) {
+        setTimeout(() => void fetchDocuments(false), 4000);
       }
-    } catch {}
+    } catch {
+      if (retryOnWake) {
+        setTimeout(() => void fetchDocuments(false), 4000);
+      }
+    }
   };
 
   useEffect(() => {
@@ -495,21 +548,37 @@ export default function DashboardPage() {
     const requestStartTime = Date.now();
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/qa/quick-chat`, {
-        method: "POST",
-        headers: getAuthHeaders({ "Content-Type": "application/json" }),
-        credentials: "include",
-        body: JSON.stringify({
-          message_text: questionToAsk.trim(),
-          document_id: selectedDocId,
-          session_id: chatSessionId || undefined,
-        }),
-      });
+      const doChatFetch = () =>
+        fetch(`${API_BASE_URL}/api/qa/quick-chat`, {
+          method: "POST",
+          headers: getAuthHeaders({ "Content-Type": "application/json" }),
+          credentials: "include",
+          body: JSON.stringify({
+            message_text: questionToAsk.trim(),
+            document_id: selectedDocId,
+            session_id: chatSessionId || undefined,
+          }),
+        });
+
+      let response: Response;
+      try {
+        response = await doChatFetch();
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+          await new Promise((r) => setTimeout(r, 3500));
+          response = await doChatFetch();
+        } else if (response.status === 401 && (await trySilentRefresh())) {
+          response = await doChatFetch();
+        }
+      } catch {
+        await new Promise((r) => setTimeout(r, 3500));
+        response = await doChatFetch();
+      }
 
       setLatencyMs(Date.now() - requestStartTime);
 
       if (!response.ok) {
-        throw new Error("We could not find an answer right now.");
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || "We could not find an answer right now.");
       }
 
       const data = await response.json();
@@ -590,6 +659,7 @@ export default function DashboardPage() {
     } catch {}
     document.cookie = "access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
     localStorage.removeItem("tokenbrief_user");
     window.location.href = "/login";
   };

@@ -171,7 +171,9 @@ async def verify_email_address(
     return {
         "access_token": access_token_string,
         "refresh_token": refresh_token_string,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "username": user.username,
+        "email": user.email_address
     }
 
 @router.post("/resend-otp", response_model=GenericMessageResponse)
@@ -288,7 +290,9 @@ async def login_and_generate_token(
     return {
         "access_token": access_token_string,
         "refresh_token": refresh_token_string,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "username": user_account.username,
+        "email": user_account.email_address
     }
 
 @router.post("/refresh", response_model=AuthenticationTokenResponse)
@@ -307,7 +311,7 @@ async def refresh_access_token(
     username = token_payload.get("sub")
     query = select(UserAccount).where(UserAccount.username == username)
     result = await database_session.execute(query)
-    user = result.scalar_one_or_none()
+    user = result.scalars().first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -327,7 +331,9 @@ async def refresh_access_token(
     return {
         "access_token": new_access_token,
         "refresh_token": new_refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "username": user.username,
+        "email": user.email_address
     }
 
 @router.post("/logout", response_model=GenericMessageResponse)

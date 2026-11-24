@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from database import initialize_database_tables
 from routers import auth, documents, qa, admin, quiz, analytics, export, entities, annotations
@@ -41,6 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal system error: {str(exc)}"}
+    )
 
 app.include_router(auth.router)
 app.include_router(documents.router)

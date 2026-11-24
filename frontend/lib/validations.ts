@@ -23,7 +23,8 @@ export const documentUploadSchema = z.object({
     .refine((file) => file.size >= 100, "File is empty (minimum 100 bytes)")
     .refine(
       (file) => {
-        const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+        const lastDot = file.name.lastIndexOf(".");
+        const ext = lastDot >= 0 ? file.name.slice(lastDot).toLowerCase() : "";
         return [".pdf", ".txt", ".md"].includes(ext);
       },
       "Only .pdf, .txt, and .md files are supported"
