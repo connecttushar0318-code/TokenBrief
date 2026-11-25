@@ -41,7 +41,7 @@ class DocumentComparisonService:
             documents_chunks_map[doc.id] = list(chunks_result.scalars().all())
 
         gemini_response = None
-        if settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy"):
+        if settings.gemini_api_key and len(settings.gemini_api_key.strip()) > 15:
             gemini_response = await cls._try_gemini_comparison(
                 documents=ordered_documents,
                 chunks_map=documents_chunks_map

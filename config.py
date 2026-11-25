@@ -27,7 +27,7 @@ class ConfigurationSettings:
         "postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db"
     )
     gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
-    gemini_model_name: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model_name: str = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
     google_cloud_project: str = os.environ.get("GOOGLE_CLOUD_PROJECT", "projects/218902508443")
     google_cloud_project_number: str = os.environ.get("GOOGLE_CLOUD_PROJECT_NUMBER", "218902508443")
     security_secret_key: str = os.environ.get(

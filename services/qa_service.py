@@ -109,12 +109,14 @@ class LLMClient:
         """Invokes fast Gemini Flash models first with cached key validation and local fallback."""
         api_key = (settings.gemini_api_key or "").strip()
         if api_key and api_key not in cls._invalid_keys:
-            preferred = settings.gemini_model_name or "gemini-2.5-flash"
+            preferred = settings.gemini_model_name or "gemini-3.5-flash-lite"
             candidate_models = list(dict.fromkeys([
-                preferred if "pro" not in preferred else "gemini-2.5-flash",
+                preferred,
+                "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-3.8-flash",
                 "gemini-2.5-flash",
                 "gemini-2.0-flash",
-                "gemini-1.5-flash",
             ]))
             client = cls._get_client(api_key)
             for model_name in candidate_models:

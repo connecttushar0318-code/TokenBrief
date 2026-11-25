@@ -65,7 +65,7 @@ class EntityKnowledgeGraphService:
             raise ValueError(f"Document with ID {document_id} contains no text chunks.")
 
         raw_entities = None
-        if settings.gemini_api_key and settings.gemini_api_key.startswith("AIzaSy"):
+        if settings.gemini_api_key and len(settings.gemini_api_key.strip()) > 15:
             raw_entities = await cls._try_gemini_entity_extraction(document_record, chunks)
 
         if not raw_entities:
